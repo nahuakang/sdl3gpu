@@ -1,0 +1,13 @@
+{
+	"folders":
+	[
+		{
+			"path": "."
+		},
+		{
+			"path": "C:\\Users\\kangn\\jai",
+			"folder_exclude_patterns": ["bin"],
+			"binary_file_patterns": ["*.bin", "jai-*", "lld-*"],
+		}
+	],
+}

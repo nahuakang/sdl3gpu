@@ -11,16 +11,21 @@ img :: #import "SDL3/image";
 #load "shader.jai";
 
 DEBUG         :: 1;
-WINDOW_WIDTH  :: 800;
-WINDOW_HEIGHT :: 600;
+WINDOW_WIDTH  :: 1920;
+WINDOW_HEIGHT :: 1080;
 
 base_path: string;
 device:    *sdl.GPU_Device;
 window:    *sdl.Window;
 
-PositionTextureVertex :: struct {
-    x, y, z: float;
-    u, v:    float;
+UBO :: struct {
+    mvp: Matrix4;
+}
+
+Vertex_Data :: struct {
+    position: Vector3;
+    color:    Vector4;
+    uv:       Vector2;
 }
 
 create_pipeline :: (
@@ -90,15 +95,15 @@ create_gpu_texture :: (w: u32, h: u32, format: sdl.GPU_Texture_Format, name: str
     return texture;
 }
 
-upload_buffers_and_texture :: (
+upload_texture :: (
     vertex_buffer: *sdl.GPU_Buffer,
     index_buffer:  *sdl.GPU_Buffer,
     texture:       *sdl.GPU_Texture,
-    vertices:      []PositionTextureVertex,
+    vertices:      []Vertex_Data,
     indices:       []u16,
     image_data:    *sdl.Surface
 ) {
-    total_size := cast(u32)(size_of(PositionTextureVertex) * vertices.count + size_of(u16) * indices.count);
+    total_size := cast(u32)(size_of(Vertex_Data) * vertices.count + size_of(u16) * indices.count);
 
     buffer_transfer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     buffer_transfer_info.usage                = .UPLOAD;
@@ -107,8 +112,8 @@ upload_buffers_and_texture :: (
     defer sdl.release_gpu_transfer_buffer(device, buffer_transfer);
 
     transfer_data := sdl.map_gpu_transfer_buffer(device, buffer_transfer, false);
-    index_ptr     := cast(*u8)transfer_data + size_of(PositionTextureVertex) * vertices.count;
-    memcpy(transfer_data, vertices.data, size_of(PositionTextureVertex) * vertices.count);
+    index_ptr     := cast(*u8)transfer_data + size_of(Vertex_Data) * vertices.count;
+    memcpy(transfer_data, vertices.data, size_of(Vertex_Data) * vertices.count);
     memcpy(index_ptr, indices.data, size_of(u16) * indices.count);
     sdl.unmap_gpu_transfer_buffer(device, buffer_transfer);
 
@@ -129,12 +134,12 @@ upload_buffers_and_texture :: (
     vertex_location.transfer_buffer = buffer_transfer;
     vertex_region: sdl.GPU_Buffer_Region;
     vertex_region.buffer = vertex_buffer;
-    vertex_region.size = cast(u32)(size_of(PositionTextureVertex) * vertices.count);
+    vertex_region.size = cast(u32)(size_of(Vertex_Data) * vertices.count);
     sdl.upload_to_gpu_buffer(copy_pass, *vertex_location, *vertex_region, false);
 
     index_location: sdl.GPU_Transfer_Buffer_Location;
     index_location.transfer_buffer = buffer_transfer;
-    index_location.offset = cast(u32)(size_of(PositionTextureVertex) * vertices.count);
+    index_location.offset = cast(u32)(size_of(Vertex_Data) * vertices.count);
     index_region: sdl.GPU_Buffer_Region;
     index_region.buffer = index_buffer;
     index_region.size = cast(u32)(size_of(u16) * indices.count);
@@ -181,19 +186,19 @@ main :: () {
 
     initialize_asset_loader();
 
-    vertex_shader := load_shader(device, "assets/shaders/TexturedQuad.vert", 0, 0, 0, 0);
+    vertex_shader := load_shader(device, "assets/shaders/basic2d.vert", 0, 1, 0, 0);
     if !vertex_shader {
         log_error("Failed to create vertex shader\n");
         return;
     }
 
-    fragment_shader := load_shader(device, "assets/shaders/TexturedQuad.frag", 1, 0, 0, 0);
+    fragment_shader := load_shader(device, "assets/shaders/basic2d.frag", 1, 0, 0, 0);
     if !fragment_shader {
         log_error("Failed to create fragment shader\n");
         return;
     }
 
-    image_data := load_image_bmp("assets/images/lettuce.bmp", 4);
+    image_data := load_image("assets/images/bg.jpg", 4);
     if !image_data {
         log_error("Could not load image data\n");
         return;
@@ -201,18 +206,19 @@ main :: () {
     defer sdl.destroy_surface(image_data);
 
     vertex_buffer_desc: sdl.GPU_Vertex_Buffer_Description;
-    vertex_buffer_desc.pitch = size_of(PositionTextureVertex);
+    vertex_buffer_desc.pitch = size_of(Vertex_Data);
     vertex_buffer_desc.input_rate = .VERTEX;
 
-    vertex_attributes: [2]sdl.GPU_Vertex_Attribute = .[
+    vertex_attributes: [3]sdl.GPU_Vertex_Attribute = .[
         {location = 0, buffer_slot = 0, format = .FLOAT3, offset = 0},
-        {location = 1, buffer_slot = 0, format = .FLOAT2, offset = size_of(float) * 3}
+        {location = 1, buffer_slot = 0, format = .FLOAT4, offset = size_of(Vector3)},
+        {location = 2, buffer_slot = 0, format = .FLOAT2, offset = size_of(Vector3) + size_of(Vector4)}
     ];
 
     vertex_input_state: sdl.GPU_Vertex_Input_State;
     vertex_input_state.num_vertex_buffers = 1;
     vertex_input_state.vertex_buffer_descriptions = *vertex_buffer_desc;
-    vertex_input_state.num_vertex_attributes = 2;
+    vertex_input_state.num_vertex_attributes = vertex_attributes.count;
     vertex_input_state.vertex_attributes = vertex_attributes.data;
 
     pipeline := create_pipeline(vertex_shader, fragment_shader, vertex_input_state);
@@ -226,19 +232,33 @@ main :: () {
     sdl.release_gpu_shader(device, fragment_shader);
 
     sampler       := create_sampler();
-    vertex_buffer := create_gpu_buffer(.VERTEX, size_of(PositionTextureVertex) * 4, "Lettuce Vertex Buffer");
+    vertex_buffer := create_gpu_buffer(.VERTEX, size_of(Vertex_Data) * 4, "Lettuce Vertex Buffer");
     index_buffer  := create_gpu_buffer(.INDEX, size_of(u16) * 6);
     texture       := create_gpu_texture(cast(u32)image_data.w, cast(u32)image_data.h, .R8G8B8A8_UNORM, "Lettuce Texture");
 
-    vertices: [4]PositionTextureVertex = .[
-        .{-1,  1, 0, 0, 0},
-        .{ 1,  1, 0, 1, 0},
-        .{ 1, -1, 0, 1, 1},
-        .{-1, -1, 0, 0, 1}
+    w := image_data.w.(float) / 2.0;
+    h := image_data.h.(float) / 2.0;
+    vertices: [4]Vertex_Data = .[
+        { position = {-w,  h,  0}, color = {1, 1, 1, 1}, uv = {0, 0}},
+        { position = { w,  h,  0}, color = {1, 1, 1, 1}, uv = {1, 0}},
+        { position = { w, -h,  0}, color = {1, 1, 1, 1}, uv = {1, 1}},
+        { position = {-w, -h,  0}, color = {1, 1, 1, 1}, uv = {0, 1}}
     ];
     indices: [6]u16 = .[0, 1, 2, 0, 2, 3];
 
-    upload_buffers_and_texture(vertex_buffer, index_buffer, texture, vertices, indices, image_data);
+    upload_texture(vertex_buffer, index_buffer, texture, vertices, indices, image_data);
+
+    projection_matrix := orthographic_projection_matrix(
+        left   = WINDOW_WIDTH.(float)  * -0.5,
+        right  = WINDOW_WIDTH.(float)  *  0.5,
+        bottom = WINDOW_HEIGHT.(float) * -0.5,
+        top    = WINDOW_HEIGHT.(float) *  0.5,
+        near   = 0,
+        far    = 1,
+    );
+    view_matrix  := Matrix4_Identity;
+    model_matrix := make_translation_matrix4({0, 0, 0});
+    mvp          := projection_matrix * view_matrix * model_matrix;
 
     exit := false;
     while !exit {
@@ -273,7 +293,9 @@ main :: () {
             index_binding: sdl.GPU_Buffer_Binding            = .{buffer = index_buffer};
             texture_binding: sdl.GPU_Texture_Sampler_Binding = .{texture = texture, sampler = sampler};
 
+            ubo := UBO.{ mvp = mvp };
             sdl.bind_gpu_graphics_pipeline(render_pass, pipeline);
+            sdl.push_gpu_vertex_uniform_data(cmd, 0, *ubo, size_of(UBO));
             sdl.bind_gpu_vertex_buffers(render_pass, 0, *vertex_binding, 1);
             sdl.bind_gpu_index_buffer(render_pass, *index_binding, .SIZE_16BIT);
             sdl.bind_gpu_fragment_samplers(render_pass, 0, *texture_binding, 1);

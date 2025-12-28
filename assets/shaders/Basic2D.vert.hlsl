@@ -16,7 +16,9 @@ struct Output {
 
 Output main(Input input) {
 	Output output;
-	output.position = mul(mvp, float4(input.position, 1));
+	// NOTE(nahua): mul(x, y); Jai's matrix is row-major, so we put the vector into x for row
+	// NOTE(nahua): We'd have a [1x4] x [4x4] => [1x4] vector
+	output.position = mul(float4(input.position, 1), mvp);
 	output.color = input.color;
 	output.uv = input.uv;
 	return output;

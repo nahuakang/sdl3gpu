@@ -32,6 +32,12 @@ Texture :: struct {
     height: s32;
 }
 
+Draw_Call :: struct {
+    texture: *Texture;
+    index_start: u32;
+    index_count: u32;
+}
+
 Renderer :: struct {
     device: *sdl.GPU_Device;
     window: *sdl.Window;
@@ -48,6 +54,13 @@ Renderer :: struct {
     transfer_buffer: *sdl.GPU_Transfer_Buffer;
 
     projection: Matrix4;
+
+    // Batch data
+    batch_vertices: [..]Vertex_Data;
+    batch_indices: [..]u16;
+    batch_draws: [..]Draw_Call;
+
+    max_sprites_per_batch: int;
 }
 
 create_pipeline :: (
@@ -183,7 +196,72 @@ begin_frame :: (renderer: *Renderer) -> bool {
     return true;
 }
 
+flush :: (renderer: *Renderer) {
+    if renderer.batch_vertices.count == 0 return;
+
+    // End render pass to do upload
+    sdl.end_gpu_render_pass(renderer.current_render_pass);
+
+    // Upload all batched data
+    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer, false);
+    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.batch_vertices.count);
+    index_size := cast(u32)(size_of(u16) * renderer.batch_indices.count);
+    index_ptr := cast(*u8)transfer_data + vertex_size;
+
+    memcpy(transfer_data, renderer.batch_vertices.data, vertex_size);
+    memcpy(index_ptr, renderer.batch_indices.data, index_size);
+    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer);
+
+    copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
+
+    vertex_location: sdl.GPU_Transfer_Buffer_Location;
+    vertex_location.transfer_buffer = renderer.transfer_buffer;
+    vertex_region: sdl.GPU_Buffer_Region;
+    vertex_region.buffer = renderer.vertex_buffer;
+    vertex_region.size = vertex_size;
+    sdl.upload_to_gpu_buffer(copy_pass, *vertex_location, *vertex_region, false);
+
+    index_location: sdl.GPU_Transfer_Buffer_Location;
+    index_location.transfer_buffer = renderer.transfer_buffer;
+    index_location.offset = vertex_size;
+    index_region: sdl.GPU_Buffer_Region;
+    index_region.buffer = renderer.index_buffer;
+    index_region.size = index_size;
+    sdl.upload_to_gpu_buffer(copy_pass, *index_location, *index_region, false);
+
+    sdl.end_gpu_copy_pass(copy_pass);
+
+    // Restart render pass
+    color_target: sdl.GPU_Color_Target_Info;
+    color_target.texture = renderer.swapchain_texture;
+    color_target.load_op = .LOAD;
+    color_target.store_op = .STORE;
+    renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
+
+    // Issue all draw calls
+    vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.vertex_buffer};
+    index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.index_buffer};
+
+    ubo := UBO.{ mvp = renderer.projection };
+    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.pipeline);
+    sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
+    sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
+    sdl.bind_gpu_index_buffer(renderer.current_render_pass, *index_binding, .SIZE_16BIT);
+
+    for renderer.batch_draws {
+        texture_binding: sdl.GPU_Texture_Sampler_Binding = .{texture = it.texture.gpu_texture, sampler = renderer.sampler};
+        sdl.bind_gpu_fragment_samplers(renderer.current_render_pass, 0, *texture_binding, 1);
+        sdl.draw_gpu_indexed_primitives(renderer.current_render_pass, it.index_count, 1, it.index_start, 0, 0);
+    }
+
+    // Clear batch
+    array_reset(*renderer.batch_vertices);
+    array_reset(*renderer.batch_indices);
+    array_reset(*renderer.batch_draws);
+}
+
 end_frame :: (renderer: *Renderer) {
+    flush(renderer);
     sdl.end_gpu_render_pass(renderer.current_render_pass);
     sdl.submit_gpu_command_buffer(renderer.current_cmd);
     renderer.current_render_pass = null;
@@ -191,18 +269,67 @@ end_frame :: (renderer: *Renderer) {
 }
 
 render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst: *sdl.F_Rect) {
-    // Draw only - data already uploaded
-    vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.vertex_buffer};
-    index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.index_buffer};
-    texture_binding: sdl.GPU_Texture_Sampler_Binding = .{texture = texture.gpu_texture, sampler = renderer.sampler};
+    // Handle null rects
+    dst_rect: sdl.F_Rect;
+    if dst {
+        dst_rect = dst.*;
+    } else {
+        dst_rect.x = WINDOW_WIDTH.(float) * -0.5;
+        dst_rect.y = WINDOW_HEIGHT.(float) * -0.5;
+        dst_rect.w = WINDOW_WIDTH.(float);
+        dst_rect.h = WINDOW_HEIGHT.(float);
+    }
 
-    ubo := UBO.{ mvp = renderer.projection };
-    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.pipeline);
-    sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
-    sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
-    sdl.bind_gpu_index_buffer(renderer.current_render_pass, *index_binding, .SIZE_16BIT);
-    sdl.bind_gpu_fragment_samplers(renderer.current_render_pass, 0, *texture_binding, 1);
-    sdl.draw_gpu_indexed_primitives(renderer.current_render_pass, 6, 1, 0, 0, 0);
+    src_rect: sdl.F_Rect;
+    if src {
+        src_rect = src.*;
+    } else {
+        src_rect.x = 0;
+        src_rect.y = 0;
+        src_rect.w = cast(float)texture.width;
+        src_rect.h = cast(float)texture.height;
+    }
+
+    // Convert dst_rect to vertex positions
+    x0 := dst_rect.x;
+    y0 := dst_rect.y;
+    x1 := dst_rect.x + dst_rect.w;
+    y1 := dst_rect.y + dst_rect.h;
+
+    // Convert src_rect to UVs
+    u0 := src_rect.x / cast(float)texture.width;
+    v0 := src_rect.y / cast(float)texture.height;
+    u1 := (src_rect.x + src_rect.w) / cast(float)texture.width;
+    v1 := (src_rect.y + src_rect.h) / cast(float)texture.height;
+
+    // Add vertices to batch
+    base_vertex := cast(u16)renderer.batch_vertices.count;
+
+    array_add(*renderer.batch_vertices, .{ position = {x0, y1, 0}, color = {1, 1, 1, 1}, uv = {u0, v0}});
+    array_add(*renderer.batch_vertices, .{ position = {x1, y1, 0}, color = {1, 1, 1, 1}, uv = {u1, v0}});
+    array_add(*renderer.batch_vertices, .{ position = {x1, y0, 0}, color = {1, 1, 1, 1}, uv = {u1, v1}});
+    array_add(*renderer.batch_vertices, .{ position = {x0, y0, 0}, color = {1, 1, 1, 1}, uv = {u0, v1}});
+
+    // Add indices to batch
+    index_start := cast(u32)renderer.batch_indices.count;
+    array_add(*renderer.batch_indices, base_vertex + 0);
+    array_add(*renderer.batch_indices, base_vertex + 1);
+    array_add(*renderer.batch_indices, base_vertex + 2);
+    array_add(*renderer.batch_indices, base_vertex + 0);
+    array_add(*renderer.batch_indices, base_vertex + 2);
+    array_add(*renderer.batch_indices, base_vertex + 3);
+
+    // Record draw call
+    draw_call: Draw_Call;
+    draw_call.texture = texture;
+    draw_call.index_start = index_start;
+    draw_call.index_count = 6;
+    array_add(*renderer.batch_draws, draw_call);
+
+    // Flush if batch is full
+    if renderer.batch_vertices.count >= renderer.max_sprites_per_batch * 4 {
+        flush(renderer);
+    }
 }
 
 main :: () {
@@ -272,12 +399,15 @@ main :: () {
     sdl.release_gpu_shader(renderer.device, fragment_shader);
 
     renderer.sampler = create_sampler(renderer.device);
-    renderer.vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, size_of(Vertex_Data) * 4, "Vertex Buffer");
-    renderer.index_buffer = create_gpu_buffer(renderer.device, .INDEX, size_of(u16) * 6);
+    renderer.max_sprites_per_batch = 1000;
+
+    // Allocate buffers for max batch size
+    renderer.vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4), "Vertex Buffer");
+    renderer.index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_sprites_per_batch * 6));
 
     transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     transfer_buffer_info.usage = .UPLOAD;
-    transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * 4 + size_of(u16) * 6);
+    transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4 + size_of(u16) * renderer.max_sprites_per_batch * 6);
     renderer.transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *transfer_buffer_info);
 
     renderer.projection = orthographic_projection_matrix(
@@ -294,6 +424,11 @@ main :: () {
         log_error("Failed to load lettuce texture\n");
         return;
     }
+    bg_texture := load_texture(*renderer, "assets/images/bg.jpg");
+    if !bg_texture {
+        log_error("Failed to load bg texture\n");
+        return;
+    }
 
     exit := false;
     while !exit {
@@ -305,62 +440,29 @@ main :: () {
             }
         }
 
-        // Prepare sprite data and upload with separate command buffer
-        src_rect := sdl.F_Rect.{0, 0, cast(float)lettuce_texture.width, cast(float)lettuce_texture.height};
-        dst_rect := sdl.F_Rect.{-100, -100, 200, 200};
-
-        x0 := dst_rect.x;
-        y0 := dst_rect.y;
-        x1 := dst_rect.x + dst_rect.w;
-        y1 := dst_rect.y + dst_rect.h;
-
-        u0 := src_rect.x / cast(float)lettuce_texture.width;
-        v0 := src_rect.y / cast(float)lettuce_texture.height;
-        u1 := (src_rect.x + src_rect.w) / cast(float)lettuce_texture.width;
-        v1 := (src_rect.y + src_rect.h) / cast(float)lettuce_texture.height;
-
-        vertices: [4]Vertex_Data = .[
-            { position = {x0, y1, 0}, color = {1, 1, 1, 1}, uv = {u0, v0}},
-            { position = {x1, y1, 0}, color = {1, 1, 1, 1}, uv = {u1, v0}},
-            { position = {x1, y0, 0}, color = {1, 1, 1, 1}, uv = {u1, v1}},
-            { position = {x0, y0, 0}, color = {1, 1, 1, 1}, uv = {u0, v1}}
-        ];
-        indices: [6]u16 = .[0, 1, 2, 0, 2, 3];
-
-        // Upload with its own command buffer
-        upload_cmd := sdl.acquire_gpu_command_buffer(renderer.device);
-        transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer, false);
-        index_ptr := cast(*u8)transfer_data + size_of(Vertex_Data) * 4;
-        memcpy(transfer_data, vertices.data, size_of(Vertex_Data) * 4);
-        memcpy(index_ptr, indices.data, size_of(u16) * 6);
-        sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer);
-
-        copy_pass := sdl.begin_gpu_copy_pass(upload_cmd);
-
-        vertex_location: sdl.GPU_Transfer_Buffer_Location;
-        vertex_location.transfer_buffer = renderer.transfer_buffer;
-        vertex_region: sdl.GPU_Buffer_Region;
-        vertex_region.buffer = renderer.vertex_buffer;
-        vertex_region.size = cast(u32)(size_of(Vertex_Data) * 4);
-        sdl.upload_to_gpu_buffer(copy_pass, *vertex_location, *vertex_region, false);
-
-        index_location: sdl.GPU_Transfer_Buffer_Location;
-        index_location.transfer_buffer = renderer.transfer_buffer;
-        index_location.offset = cast(u32)(size_of(Vertex_Data) * 4);
-        index_region: sdl.GPU_Buffer_Region;
-        index_region.buffer = renderer.index_buffer;
-        index_region.size = cast(u32)(size_of(u16) * 6);
-        sdl.upload_to_gpu_buffer(copy_pass, *index_location, *index_region, false);
-
-        sdl.end_gpu_copy_pass(copy_pass);
-        sdl.submit_gpu_command_buffer(upload_cmd);
-
         if !begin_frame(*renderer) {
             log_error("Failed to begin frame\n");
             return;
         }
 
-        render_texture(*renderer, lettuce_texture, *src_rect, *dst_rect);
+        // Draw bg
+        bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
+        render_texture(*renderer, bg_texture, *bg_src_rect, null);
+
+        // Draw multiple lettuces at different positions
+        lettuce_src_rect := sdl.F_Rect.{0, 0, cast(float)lettuce_texture.width, cast(float)lettuce_texture.height};
+
+        dst1 := sdl.F_Rect.{-300, -200, 150, 150};
+        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst1);
+
+        dst2 := sdl.F_Rect.{0, 0, 200, 200};
+        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst2);
+
+        dst3 := sdl.F_Rect.{250, -100, 100, 100};
+        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst3);
+
+        dst4 := sdl.F_Rect.{-200, 200, 180, 180};
+        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
 
         end_frame(*renderer);
     }

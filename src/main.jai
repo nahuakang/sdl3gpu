@@ -46,23 +46,30 @@ Renderer :: struct {
     current_cmd: *sdl.GPU_Command_Buffer;
     swapchain_texture: *sdl.GPU_Texture;
 
-    pipeline: *sdl.GPU_Graphics_Pipeline;
+    triangle_pipeline: *sdl.GPU_Graphics_Pipeline;
+    line_pipeline: *sdl.GPU_Graphics_Pipeline;
     sampler: *sdl.GPU_Sampler;
 
     vertex_buffer: *sdl.GPU_Buffer;
     index_buffer: *sdl.GPU_Buffer;
     transfer_buffer: *sdl.GPU_Transfer_Buffer;
 
-    /* Batch data */
+    line_vertex_buffer: *sdl.GPU_Buffer;
+    line_transfer_buffer: *sdl.GPU_Transfer_Buffer;
+
+    /* Triangle batch data */
     batch_vertices: [..]Vertex_Data;
     batch_indices: [..]u16;
     batch_draws: [..]Draw_Call;
 
+    /* Line batch data */
+    line_vertices: [..]Vertex_Data;
+
     max_sprites_per_batch: int;
+    max_lines_per_batch: int;
 
     projection: Matrix4;
 
-    current_draw_color: sdl.Color = {255, 255, 255, 255};
     white_texture: *Texture;
 }
 
@@ -72,7 +79,7 @@ create_pipeline :: (
     vertex_shader: *sdl.GPU_Shader,
     fragment_shader: *sdl.GPU_Shader,
     vertex_input_state: sdl.GPU_Vertex_Input_State,
-    primitive_type: sdl.GPU_Primitive_Type = sdl.GPU_Primitive_Type.TRIANGLELIST
+    primitive_type: sdl.GPU_Primitive_Type
 ) -> *sdl.GPU_Graphics_Pipeline {
     swapchain_format: sdl.GPU_Texture_Format = sdl.get_gpu_swapchain_texture_format(device, window);
     color_target: sdl.GPU_Color_Target_Description;
@@ -247,13 +254,13 @@ begin_frame :: (renderer: *Renderer) -> bool {
     return true;
 }
 
-flush :: (renderer: *Renderer) {
+flush_triangles :: (renderer: *Renderer) {
     if renderer.batch_vertices.count == 0 return;
 
-    // End render pass to do upload
+    // End current render pass
     sdl.end_gpu_render_pass(renderer.current_render_pass);
 
-    // Upload all batched data
+    // Upload data via copy pass
     transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer, false);
     vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.batch_vertices.count);
     index_size := cast(u32)(size_of(u16) * renderer.batch_indices.count);
@@ -282,19 +289,19 @@ flush :: (renderer: *Renderer) {
 
     sdl.end_gpu_copy_pass(copy_pass);
 
-    // Restart render pass
+    // Restart render pass with LOAD to preserve previous content
     color_target: sdl.GPU_Color_Target_Info;
     color_target.texture = renderer.swapchain_texture;
     color_target.load_op = .LOAD;
     color_target.store_op = .STORE;
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
 
-    // Issue all draw calls
+    // Bind and draw
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.vertex_buffer};
     index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.index_buffer};
 
     ubo := UBO.{ mvp = renderer.projection };
-    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.pipeline);
+    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.triangle_pipeline);
     sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
     sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
     sdl.bind_gpu_index_buffer(renderer.current_render_pass, *index_binding, .SIZE_16BIT);
@@ -305,10 +312,55 @@ flush :: (renderer: *Renderer) {
         sdl.draw_gpu_indexed_primitives(renderer.current_render_pass, it.index_count, 1, it.index_start, 0, 0);
     }
 
-    // Clear batch
     array_reset(*renderer.batch_vertices);
     array_reset(*renderer.batch_indices);
     array_reset(*renderer.batch_draws);
+}
+
+flush_lines :: (renderer: *Renderer) {
+    if renderer.line_vertices.count == 0 return;
+
+    sdl.end_gpu_render_pass(renderer.current_render_pass);
+
+    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.line_vertices.count);
+    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer, false);  // Changed
+    memcpy(transfer_data, renderer.line_vertices.data, vertex_size);
+    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);  // Changed
+
+    copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
+
+    vertex_location: sdl.GPU_Transfer_Buffer_Location;
+    vertex_location.transfer_buffer = renderer.line_transfer_buffer;  // Changed
+    vertex_region: sdl.GPU_Buffer_Region;
+    vertex_region.buffer = renderer.line_vertex_buffer;
+    vertex_region.size = vertex_size;
+    sdl.upload_to_gpu_buffer(copy_pass, *vertex_location, *vertex_region, false);
+
+    sdl.end_gpu_copy_pass(copy_pass);
+
+    color_target: sdl.GPU_Color_Target_Info;
+    color_target.texture = renderer.swapchain_texture;
+    color_target.load_op = .LOAD;
+    color_target.store_op = .STORE;
+    renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
+
+    vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.line_vertex_buffer};
+
+    ubo := UBO.{ mvp = renderer.projection };
+    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.line_pipeline);
+    sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
+    sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
+
+    white_texture_binding: sdl.GPU_Texture_Sampler_Binding = .{texture = renderer.white_texture.gpu_texture, sampler = renderer.sampler};
+    sdl.bind_gpu_fragment_samplers(renderer.current_render_pass, 0, *white_texture_binding, 1);
+    sdl.draw_gpu_primitives(renderer.current_render_pass, cast(u32)renderer.line_vertices.count, 1, 0, 0);
+
+    array_reset(*renderer.line_vertices);
+}
+
+flush :: (renderer: *Renderer) {
+    flush_triangles(renderer);
+    flush_lines(renderer);
 }
 
 end_frame :: (renderer: *Renderer) {
@@ -320,7 +372,6 @@ end_frame :: (renderer: *Renderer) {
 }
 
 render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst: *sdl.F_Rect) {
-    // Handle null rects
     dst_rect: sdl.F_Rect;
     if dst {
         dst_rect = dst.*;
@@ -341,19 +392,16 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
         src_rect.h = cast(float)texture.height;
     }
 
-    // Convert dst_rect to vertex positions
     x0 := dst_rect.x;
     y0 := dst_rect.y;
     x1 := dst_rect.x + dst_rect.w;
     y1 := dst_rect.y + dst_rect.h;
 
-    // Convert src_rect to UVs
     u0 := src_rect.x / cast(float)texture.width;
     v0 := src_rect.y / cast(float)texture.height;
     u1 := (src_rect.x + src_rect.w) / cast(float)texture.width;
     v1 := (src_rect.y + src_rect.h) / cast(float)texture.height;
 
-    // Add vertices to batch
     base_vertex := cast(u16)renderer.batch_vertices.count;
 
     array_add(*renderer.batch_vertices, .{ position = {x0, y1, 0}, color = {1, 1, 1, 1}, uv = {u0, v0}});
@@ -361,7 +409,6 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     array_add(*renderer.batch_vertices, .{ position = {x1, y0, 0}, color = {1, 1, 1, 1}, uv = {u1, v1}});
     array_add(*renderer.batch_vertices, .{ position = {x0, y0, 0}, color = {1, 1, 1, 1}, uv = {u0, v1}});
 
-    // Add indices to batch
     index_start := cast(u32)renderer.batch_indices.count;
     array_add(*renderer.batch_indices, base_vertex + 0);
     array_add(*renderer.batch_indices, base_vertex + 1);
@@ -370,21 +417,15 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     array_add(*renderer.batch_indices, base_vertex + 2);
     array_add(*renderer.batch_indices, base_vertex + 3);
 
-    // Record draw call
     draw_call: Draw_Call;
     draw_call.texture = texture;
     draw_call.index_start = index_start;
     draw_call.index_count = 6;
     array_add(*renderer.batch_draws, draw_call);
 
-    // Flush if batch is full
     if renderer.batch_vertices.count >= renderer.max_sprites_per_batch * 4 {
-        flush(renderer);
+        flush_triangles(renderer);
     }
-}
-
-set_render_draw_color :: (renderer: *Renderer, r: u8, g: u8, b: u8, a: u8) {
-    renderer.current_draw_color = {r, g, b, a};
 }
 
 render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
@@ -396,13 +437,12 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) 
     base_vertex := cast(u16)renderer.batch_vertices.count;
 
     color_vec4 := Vector4.{
-        x = color.r.(float32),
-        y = color.g.(float32),
-        z = color.b.(float32),
-        w = color.a.(float32),
+        x = color.r.(float32) / 255.0,
+        y = color.g.(float32) / 255.0,
+        z = color.b.(float32) / 255.0,
+        w = color.a.(float32) / 255.0,
     };
 
-    // Add vertices with color, UVs don't matter but set to 0
     array_add(*renderer.batch_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.batch_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.batch_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
@@ -416,15 +456,44 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) 
     array_add(*renderer.batch_indices, base_vertex + 2);
     array_add(*renderer.batch_indices, base_vertex + 3);
 
-    // Use a white 1x1 texture for solid colors
     draw_call: Draw_Call;
-    draw_call.texture = renderer.white_texture; // You'll need to create this
+    draw_call.texture = renderer.white_texture;
     draw_call.index_start = index_start;
     draw_call.index_count = 6;
     array_add(*renderer.batch_draws, draw_call);
 
     if renderer.batch_vertices.count >= renderer.max_sprites_per_batch * 4 {
-        flush(renderer);
+        flush_triangles(renderer);
+    }
+}
+
+render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
+    x0 := rect.x;
+    y0 := rect.y;
+    x1 := rect.x + rect.w;
+    y1 := rect.y + rect.h;
+
+    color_vec4 := Vector4.{
+        x = color.r.(float32) / 255.0,
+        y = color.g.(float32) / 255.0,
+        z = color.b.(float32) / 255.0,
+        w = color.a.(float32) / 255.0,
+    };
+
+    array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
+
+    array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
+
+    array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
+
+    array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
+
+    if renderer.line_vertices.count >= renderer.max_lines_per_batch * 2 {
+        flush_lines(renderer);
     }
 }
 
@@ -485,9 +554,15 @@ main :: () {
     vertex_input_state.num_vertex_attributes = vertex_attributes.count;
     vertex_input_state.vertex_attributes = vertex_attributes.data;
 
-    renderer.pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state);
-    if !renderer.pipeline {
-        log_error("Failed to create pipeline\n");
+    renderer.triangle_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .TRIANGLELIST);
+    if !renderer.triangle_pipeline {
+        log_error("Failed to create triangle pipeline\n");
+        return;
+    }
+
+    renderer.line_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .LINELIST);
+    if !renderer.line_pipeline {
+        log_error("Failed to create line pipeline\n");
         return;
     }
 
@@ -496,15 +571,21 @@ main :: () {
 
     renderer.sampler = create_sampler(renderer.device);
     renderer.max_sprites_per_batch = 1000;
+    renderer.max_lines_per_batch = 1000;
 
-    // Allocate buffers for max batch size
     renderer.vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4), "Vertex Buffer");
-    renderer.index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_sprites_per_batch * 6));
+    renderer.index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_sprites_per_batch * 6), "Index Buffer");
+    renderer.line_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2), "Line Vertex Buffer");
 
     transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     transfer_buffer_info.usage = .UPLOAD;
     transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4 + size_of(u16) * renderer.max_sprites_per_batch * 6);
     renderer.transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *transfer_buffer_info);
+
+    line_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
+    line_transfer_buffer_info.usage = .UPLOAD;
+    line_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2);
+    renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
 
     renderer.projection = orthographic_projection_matrix(
         left = WINDOW_WIDTH.(float) * -0.5,
@@ -551,6 +632,10 @@ main :: () {
         bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
         render_texture(*renderer, bg_texture, *bg_src_rect, null);
 
+        large_line_rect := sdl.F_Rect.{-400, -300, 800, 800};
+        large_line_color := sdl.Color.{0, 255, 0, 255};
+        render_rect(*renderer, *large_line_rect, *large_line_color);
+
         // Draw multiple lettuces at different positions
         lettuce_src_rect := sdl.F_Rect.{0, 0, cast(float)lettuce_texture.width, cast(float)lettuce_texture.height};
 
@@ -566,13 +651,26 @@ main :: () {
         dst4 := sdl.F_Rect.{-200, 200, 180, 180};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
 
-        set_render_draw_color(*renderer, 0, 255, 0, 255);
         rect := sdl.F_Rect.{100, 200, 200, 200};
         color := sdl.Color.{0, 255, 0, 255};
         render_fill_rect(*renderer, *rect, *color);
 
+        line_rect := sdl.F_Rect.{-200, -300, 200, 200};
+        line_color := sdl.Color.{0, 255, 0, 255};
+        render_rect(*renderer, *line_rect, *line_color);
+
         end_frame(*renderer);
     }
+
+    sdl.release_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer);
+    sdl.release_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);
+    sdl.release_gpu_buffer(renderer.device, renderer.vertex_buffer);
+    sdl.release_gpu_buffer(renderer.device, renderer.index_buffer);
+    sdl.release_gpu_buffer(renderer.device, renderer.line_vertex_buffer);
+    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.triangle_pipeline);
+    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.line_pipeline);
+    sdl.release_gpu_sampler(renderer.device, renderer.sampler);
+    sdl.destroy_gpu_device(renderer.device);
 
     sdl.destroy_window(renderer.window);
     sdl.quit();

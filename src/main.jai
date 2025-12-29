@@ -53,14 +53,17 @@ Renderer :: struct {
     index_buffer: *sdl.GPU_Buffer;
     transfer_buffer: *sdl.GPU_Transfer_Buffer;
 
-    projection: Matrix4;
-
-    // Batch data
+    /* Batch data */
     batch_vertices: [..]Vertex_Data;
     batch_indices: [..]u16;
     batch_draws: [..]Draw_Call;
 
     max_sprites_per_batch: int;
+
+    projection: Matrix4;
+
+    current_draw_color: sdl.Color = {255, 255, 255, 255};
+    white_texture: *Texture;
 }
 
 create_pipeline :: (
@@ -129,6 +132,54 @@ create_gpu_texture :: (device: *sdl.GPU_Device, w: u32, h: u32, format: sdl.GPU_
     texture: *sdl.GPU_Texture = sdl.create_gpu_texture(device, *info);
 
     if name && texture sdl.set_gpu_texture_name(device, texture, name.data);
+
+    return texture;
+}
+
+create_white_texture :: (renderer: *Renderer) -> *Texture {
+    white_surface := sdl.create_surface(1, 1, .RGBA32);
+    if !white_surface {
+        log_error("Failed to create white surface\n");
+        return null;
+    }
+    defer sdl.destroy_surface(white_surface);
+
+    white_pixels := cast(*u32)white_surface.pixels;
+    white_pixels[0] = 0xFFFFFFFF;
+
+    texture := New(Texture);
+    texture.width = 1;
+    texture.height = 1;
+    texture.gpu_texture = create_gpu_texture(renderer.device, 1, 1, .R8G8B8A8_UNORM, "White Texture");
+
+    texture_transfer_info: sdl.GPU_Transfer_Buffer_Create_Info;
+    texture_transfer_info.usage = .UPLOAD;
+    texture_transfer_info.size = 4;
+    white_transfer := sdl.create_gpu_transfer_buffer(renderer.device, *texture_transfer_info);
+    if !white_transfer {
+        log_error("Failed to create transfer buffer for white texture\n");
+        return null;
+    }
+
+    white_ptr := cast(*u8)sdl.map_gpu_transfer_buffer(renderer.device, white_transfer, false);
+    memcpy(white_ptr, white_surface.pixels, 4);
+    sdl.unmap_gpu_transfer_buffer(renderer.device, white_transfer);
+
+    cmd := sdl.acquire_gpu_command_buffer(renderer.device);
+    copy_pass := sdl.begin_gpu_copy_pass(cmd);
+
+    tex_transfer: sdl.GPU_Texture_Transfer_Info;
+    tex_transfer.transfer_buffer = white_transfer;
+    tex_region: sdl.GPU_Texture_Region;
+    tex_region.texture = texture.gpu_texture;
+    tex_region.w = 1;
+    tex_region.h = 1;
+    tex_region.d = 1;
+    sdl.upload_to_gpu_texture(copy_pass, *tex_transfer, *tex_region, false);
+
+    sdl.end_gpu_copy_pass(copy_pass);
+    sdl.submit_gpu_command_buffer(cmd);
+    sdl.release_gpu_transfer_buffer(renderer.device, white_transfer);
 
     return texture;
 }
@@ -332,6 +383,51 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     }
 }
 
+set_render_draw_color :: (renderer: *Renderer, r: u8, g: u8, b: u8, a: u8) {
+    renderer.current_draw_color = {r, g, b, a};
+}
+
+render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
+    x0 := rect.x;
+    y0 := rect.y;
+    x1 := rect.x + rect.w;
+    y1 := rect.y + rect.h;
+
+    base_vertex := cast(u16)renderer.batch_vertices.count;
+
+    color_vec4 := Vector4.{
+        x = color.r.(float32),
+        y = color.g.(float32),
+        z = color.b.(float32),
+        w = color.a.(float32),
+    };
+
+    // Add vertices with color, UVs don't matter but set to 0
+    array_add(*renderer.batch_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.batch_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.batch_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.batch_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
+
+    index_start := cast(u32)renderer.batch_indices.count;
+    array_add(*renderer.batch_indices, base_vertex + 0);
+    array_add(*renderer.batch_indices, base_vertex + 1);
+    array_add(*renderer.batch_indices, base_vertex + 2);
+    array_add(*renderer.batch_indices, base_vertex + 0);
+    array_add(*renderer.batch_indices, base_vertex + 2);
+    array_add(*renderer.batch_indices, base_vertex + 3);
+
+    // Use a white 1x1 texture for solid colors
+    draw_call: Draw_Call;
+    draw_call.texture = renderer.white_texture; // You'll need to create this
+    draw_call.index_start = index_start;
+    draw_call.index_count = 6;
+    array_add(*renderer.batch_draws, draw_call);
+
+    if renderer.batch_vertices.count >= renderer.max_sprites_per_batch * 4 {
+        flush(renderer);
+    }
+}
+
 main :: () {
     if !sdl.init(sdl.Init_Flags.VIDEO) {
         log_error("Could not initialize SDL: %\n", to_string(sdl.get_error()));
@@ -419,6 +515,12 @@ main :: () {
         far = 1,
     );
 
+    renderer.white_texture = create_white_texture(*renderer);
+    if renderer.white_texture == null {
+        log_error("Failed to create white texture for renderer: %\n", to_string(sdl.get_error()));
+        return;
+    }
+
     lettuce_texture := load_texture(*renderer, "assets/images/lettuce.bmp");
     if !lettuce_texture {
         log_error("Failed to load lettuce texture\n");
@@ -463,6 +565,11 @@ main :: () {
 
         dst4 := sdl.F_Rect.{-200, 200, 180, 180};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
+
+        set_render_draw_color(*renderer, 0, 255, 0, 255);
+        rect := sdl.F_Rect.{100, 200, 200, 200};
+        color := sdl.Color.{0, 255, 0, 255};
+        render_fill_rect(*renderer, *rect, *color);
 
         end_frame(*renderer);
     }

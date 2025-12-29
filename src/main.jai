@@ -1,3 +1,13 @@
+/*
+TODO
+
+1. Use a different coordinate in draw calls
+2. What do we do with the renderer fields if we want to draw text or UI in the future where draw call sequences matter?
+3. Review the entire flow for draw triangles again
+
+*/
+
+
 #import "Basic";
 #import "File";
 #import "Math";
@@ -10,7 +20,6 @@ img :: #import "SDL3/image";
 #load "image.jai";
 #load "shader.jai";
 
-DEBUG         :: 1;
 WINDOW_WIDTH  :: 1920;
 WINDOW_HEIGHT :: 1080;
 
@@ -373,13 +382,14 @@ end_frame :: (renderer: *Renderer) {
 
 render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst: *sdl.F_Rect) {
     dst_rect: sdl.F_Rect;
-    if dst {
+    if dst != null {
         dst_rect = dst.*;
     } else {
-        dst_rect.x = WINDOW_WIDTH.(float) * -0.5;
-        dst_rect.y = WINDOW_HEIGHT.(float) * -0.5;
-        dst_rect.w = WINDOW_WIDTH.(float);
-        dst_rect.h = WINDOW_HEIGHT.(float);
+        // dst_rect.x = WINDOW_WIDTH.(float) * -0.5;
+        // dst_rect.y = WINDOW_HEIGHT.(float) * -0.5;
+        // dst_rect.w = WINDOW_WIDTH.(float);
+        // dst_rect.h = WINDOW_HEIGHT.(float);
+        dst_rect = sdl.F_Rect.{0, 0, WINDOW_WIDTH.(float), WINDOW_HEIGHT.(float)};
     }
 
     src_rect: sdl.F_Rect;
@@ -588,10 +598,10 @@ main :: () {
     renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
 
     renderer.projection = orthographic_projection_matrix(
-        left = WINDOW_WIDTH.(float) * -0.5,
-        right = WINDOW_WIDTH.(float) * 0.5,
-        bottom = WINDOW_HEIGHT.(float) * -0.5,
-        top = WINDOW_HEIGHT.(float) * 0.5,
+        left = 0,
+        right = WINDOW_WIDTH.(float),
+        bottom = 0,  // Changed
+        top = WINDOW_HEIGHT.(float),  // Changed
         near = 0,
         far = 1,
     );
@@ -632,30 +642,30 @@ main :: () {
         bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
         render_texture(*renderer, bg_texture, *bg_src_rect, null);
 
-        large_line_rect := sdl.F_Rect.{-400, -300, 800, 800};
+        large_line_rect := sdl.F_Rect.{100, 100, 800, 800};
         large_line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *large_line_rect, *large_line_color);
 
         // Draw multiple lettuces at different positions
         lettuce_src_rect := sdl.F_Rect.{0, 0, cast(float)lettuce_texture.width, cast(float)lettuce_texture.height};
 
-        dst1 := sdl.F_Rect.{-300, -200, 150, 150};
+        dst1 := sdl.F_Rect.{0, 0, 150, 150};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst1);
 
-        dst2 := sdl.F_Rect.{0, 0, 200, 200};
+        dst2 := sdl.F_Rect.{150, 150, 200, 200};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst2);
 
-        dst3 := sdl.F_Rect.{250, -100, 100, 100};
+        dst3 := sdl.F_Rect.{350, 350, 100, 100};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst3);
 
-        dst4 := sdl.F_Rect.{-200, 200, 180, 180};
+        dst4 := sdl.F_Rect.{450, 450, 180, 180};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
 
-        rect := sdl.F_Rect.{100, 200, 200, 200};
+        rect := sdl.F_Rect.{700, 700, 200, 200};
         color := sdl.Color.{0, 255, 0, 255};
         render_fill_rect(*renderer, *rect, *color);
 
-        line_rect := sdl.F_Rect.{-200, -300, 200, 200};
+        line_rect := sdl.F_Rect.{1000, 500, 200, 200};
         line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *line_rect, *line_color);
 

@@ -1,9 +1,28 @@
 /*
 TODO
 
-1. Use a different coordinate in draw calls
-2. What do we do with the renderer fields if we want to draw text or UI in the future where draw call sequences matter?
-3. Review the entire flow for draw triangles again
+- [x] What do we do with the renderer fields if we want to draw text or UI in the future where draw call sequences matter?
+- [x] Review the entire flow for draw triangles again
+- [ ] Figure out why the lettuce have white background
+- [ ] How to keep aspect ratio when window is resized
+- [ ] How to do a 2D camera if we display a larger background than the window size
+- [ ] How to display a large background (but not a tilemap)
+- [ ] How to render to texture
+- [x] Implement render_rect
+- [x] Implement render_fill_rect
+- [ ] Implement basic text rendering
+- [ ] Implement scissor
+- [ ] Implement DrawLineEX (using triangles/quads with thickness)
+- [ ] Implement DrawLineBezier
+- [ ] Implement DrawCircle (filled)
+- [ ] Implement DrawCircleLines (circle outline)
+- [ ] Implement DrawCircleLinesV(circle vector)
+- [ ] Implement DrawEllipse
+- [ ] Implement DrawEllipseLines
+- [ ] Implement DrawPolyLines / DrawPolyLinesEx
+- [ ] Implement DrawRectangleRounded / DrawRectangleRoundedLines / DrawRectangleRoundedLinesEx
+- [ ] Implement basic physics and shape collisions
+- [ ] Implement framerate and fixed timesteps
 
 */
 
@@ -55,13 +74,13 @@ Renderer :: struct {
     current_cmd: *sdl.GPU_Command_Buffer;
     swapchain_texture: *sdl.GPU_Texture;
 
-    triangle_pipeline: *sdl.GPU_Graphics_Pipeline;
+    quad_pipeline: *sdl.GPU_Graphics_Pipeline;
     line_pipeline: *sdl.GPU_Graphics_Pipeline;
     sampler: *sdl.GPU_Sampler;
 
-    vertex_buffer: *sdl.GPU_Buffer;
-    index_buffer: *sdl.GPU_Buffer;
-    transfer_buffer: *sdl.GPU_Transfer_Buffer;
+    quad_vertex_buffer: *sdl.GPU_Buffer;
+    quad_index_buffer: *sdl.GPU_Buffer;
+    quad_transfer_buffer: *sdl.GPU_Transfer_Buffer;
 
     line_vertex_buffer: *sdl.GPU_Buffer;
     line_transfer_buffer: *sdl.GPU_Transfer_Buffer;
@@ -270,29 +289,29 @@ flush_triangles :: (renderer: *Renderer) {
     sdl.end_gpu_render_pass(renderer.current_render_pass);
 
     // Upload data via copy pass
-    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer, false);
+    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.quad_transfer_buffer, false);
     vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.batch_vertices.count);
     index_size := cast(u32)(size_of(u16) * renderer.batch_indices.count);
     index_ptr := cast(*u8)transfer_data + vertex_size;
 
     memcpy(transfer_data, renderer.batch_vertices.data, vertex_size);
     memcpy(index_ptr, renderer.batch_indices.data, index_size);
-    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer);
+    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.quad_transfer_buffer);
 
     copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
 
     vertex_location: sdl.GPU_Transfer_Buffer_Location;
-    vertex_location.transfer_buffer = renderer.transfer_buffer;
+    vertex_location.transfer_buffer = renderer.quad_transfer_buffer;
     vertex_region: sdl.GPU_Buffer_Region;
-    vertex_region.buffer = renderer.vertex_buffer;
+    vertex_region.buffer = renderer.quad_vertex_buffer;
     vertex_region.size = vertex_size;
     sdl.upload_to_gpu_buffer(copy_pass, *vertex_location, *vertex_region, false);
 
     index_location: sdl.GPU_Transfer_Buffer_Location;
-    index_location.transfer_buffer = renderer.transfer_buffer;
+    index_location.transfer_buffer = renderer.quad_transfer_buffer;
     index_location.offset = vertex_size;
     index_region: sdl.GPU_Buffer_Region;
-    index_region.buffer = renderer.index_buffer;
+    index_region.buffer = renderer.quad_index_buffer;
     index_region.size = index_size;
     sdl.upload_to_gpu_buffer(copy_pass, *index_location, *index_region, false);
 
@@ -306,11 +325,11 @@ flush_triangles :: (renderer: *Renderer) {
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
 
     // Bind and draw
-    vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.vertex_buffer};
-    index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.index_buffer};
+    vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.quad_vertex_buffer};
+    index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.quad_index_buffer};
 
     ubo := UBO.{ mvp = renderer.projection };
-    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.triangle_pipeline);
+    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.quad_pipeline);
     sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
     sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
     sdl.bind_gpu_index_buffer(renderer.current_render_pass, *index_binding, .SIZE_16BIT);
@@ -385,11 +404,9 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     if dst != null {
         dst_rect = dst.*;
     } else {
-        // dst_rect.x = WINDOW_WIDTH.(float) * -0.5;
-        // dst_rect.y = WINDOW_HEIGHT.(float) * -0.5;
-        // dst_rect.w = WINDOW_WIDTH.(float);
-        // dst_rect.h = WINDOW_HEIGHT.(float);
-        dst_rect = sdl.F_Rect.{0, 0, WINDOW_WIDTH.(float), WINDOW_HEIGHT.(float)};
+        drawable_width, drawable_height: s32;
+        sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
+        dst_rect = sdl.F_Rect.{0, 0, drawable_width.(float), drawable_height.(float)};
     }
 
     src_rect: sdl.F_Rect;
@@ -564,8 +581,8 @@ main :: () {
     vertex_input_state.num_vertex_attributes = vertex_attributes.count;
     vertex_input_state.vertex_attributes = vertex_attributes.data;
 
-    renderer.triangle_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .TRIANGLELIST);
-    if !renderer.triangle_pipeline {
+    renderer.quad_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .TRIANGLELIST);
+    if !renderer.quad_pipeline {
         log_error("Failed to create triangle pipeline\n");
         return;
     }
@@ -583,25 +600,27 @@ main :: () {
     renderer.max_sprites_per_batch = 1000;
     renderer.max_lines_per_batch = 1000;
 
-    renderer.vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4), "Vertex Buffer");
-    renderer.index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_sprites_per_batch * 6), "Index Buffer");
+    renderer.quad_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4), "Vertex Buffer");
+    renderer.quad_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_sprites_per_batch * 6), "Index Buffer");
     renderer.line_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2), "Line Vertex Buffer");
 
-    transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
-    transfer_buffer_info.usage = .UPLOAD;
-    transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4 + size_of(u16) * renderer.max_sprites_per_batch * 6);
-    renderer.transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *transfer_buffer_info);
+    quad_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
+    quad_transfer_buffer_info.usage = .UPLOAD;
+    quad_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4 + size_of(u16) * renderer.max_sprites_per_batch * 6);
+    renderer.quad_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *quad_transfer_buffer_info);
 
     line_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     line_transfer_buffer_info.usage = .UPLOAD;
     line_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2);
     renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
 
+    drawable_width, drawable_height: s32;
+    sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
     renderer.projection = orthographic_projection_matrix(
         left = 0,
-        right = WINDOW_WIDTH.(float),
-        bottom = 0,  // Changed
-        top = WINDOW_HEIGHT.(float),  // Changed
+        right = drawable_width.(float),
+        bottom = 0,
+        top = drawable_height.(float),
         near = 0,
         far = 1,
     );
@@ -630,6 +649,18 @@ main :: () {
             if event.type == {
                 case .QUIT; exit = true;
                 case .KEY_UP; if event.key.key == .ESCAPE exit = true;
+                case .WINDOW_RESIZED;
+                case .WINDOW_PIXEL_SIZE_CHANGED;
+                    drawable_width, drawable_height: s32;
+                    sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
+                    renderer.projection = orthographic_projection_matrix(
+                        left = 0,
+                        right = drawable_width.(float),
+                        bottom = 0,
+                        top = drawable_height.(float),
+                        near = 0,
+                        far = 1,
+                    );
             }
         }
 
@@ -672,12 +703,12 @@ main :: () {
         end_frame(*renderer);
     }
 
-    sdl.release_gpu_transfer_buffer(renderer.device, renderer.transfer_buffer);
+    sdl.release_gpu_transfer_buffer(renderer.device, renderer.quad_transfer_buffer);
     sdl.release_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);
-    sdl.release_gpu_buffer(renderer.device, renderer.vertex_buffer);
-    sdl.release_gpu_buffer(renderer.device, renderer.index_buffer);
+    sdl.release_gpu_buffer(renderer.device, renderer.quad_vertex_buffer);
+    sdl.release_gpu_buffer(renderer.device, renderer.quad_index_buffer);
     sdl.release_gpu_buffer(renderer.device, renderer.line_vertex_buffer);
-    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.triangle_pipeline);
+    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.quad_pipeline);
     sdl.release_gpu_graphics_pipeline(renderer.device, renderer.line_pipeline);
     sdl.release_gpu_sampler(renderer.device, renderer.sampler);
     sdl.destroy_gpu_device(renderer.device);

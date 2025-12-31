@@ -1,4 +1,6 @@
 .build
 src/.build
 build
+.DS_Store
+>>>>>>> Stashed changes
 *.sublime-workspace

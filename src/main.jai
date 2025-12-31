@@ -31,7 +31,6 @@ TODO
 #import "File";
 #import "Math";
 #import "String";
-#import "Windows";
 sdl :: #import "SDL3";
 img :: #import "SDL3/image";
 
@@ -102,7 +101,7 @@ main :: () {
     vertex_input_state.num_vertex_attributes = vertex_attributes.count;
     vertex_input_state.vertex_attributes = vertex_attributes.data;
 
-    renderer.quad_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .TRIANGLELIST);
+    renderer.quad_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .TRIANGLELIST, enable_blend=true);
     if !renderer.quad_pipeline {
         log_error("Failed to create triangle pipeline\n");
         return;

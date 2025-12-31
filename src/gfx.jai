@@ -61,11 +61,23 @@ create_pipeline :: (
     vertex_shader: *sdl.GPU_Shader,
     fragment_shader: *sdl.GPU_Shader,
     vertex_input_state: sdl.GPU_Vertex_Input_State,
-    primitive_type: sdl.GPU_Primitive_Type
+    primitive_type: sdl.GPU_Primitive_Type,
+    enable_blend: bool = false
 ) -> *sdl.GPU_Graphics_Pipeline {
     swapchain_format: sdl.GPU_Texture_Format = sdl.get_gpu_swapchain_texture_format(device, window);
     color_target: sdl.GPU_Color_Target_Description;
     color_target.format = swapchain_format;
+    if enable_blend {
+        blend_state: sdl.GPU_Color_Target_Blend_State;
+        blend_state.enable_blend = true;
+        blend_state.src_color_blendfactor = .SRC_ALPHA;
+        blend_state.dst_color_blendfactor = .ONE_MINUS_SRC_ALPHA;
+        blend_state.color_blend_op = .ADD;
+        blend_state.src_alpha_blendfactor = .ONE;
+        blend_state.dst_alpha_blendfactor = .ONE_MINUS_SRC_ALPHA;
+        blend_state.alpha_blend_op = .ADD;
+        color_target.blend_state = blend_state;
+    }
 
     pipeline_info: sdl.GPU_Graphics_Pipeline_Create_Info;
     pipeline_info.vertex_shader = vertex_shader;

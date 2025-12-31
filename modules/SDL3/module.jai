@@ -44,6 +44,11 @@
 } else #if OS == .WINDOWS {
     SDL3       :: #library "windows/SDL3";
     SDL3_image :: #library "image/windows/SDL3_image";
+    SDL3_ttf   :: #library "ttf/windows/SDL3_ttf";
+} else #if OS == .MACOS {
+    SDL3 :: #library "macos/libSDL3";
+    #library,system,link_always "libdl";
+    #library,system,link_always "libm";
 }
 
 // main :: () {}

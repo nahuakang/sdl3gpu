@@ -1,6 +1,5 @@
 .build
 src/.build
-build
+build/sdl3gpu.dSYM
 .DS_Store
->>>>>>> Stashed changes
 *.sublime-workspace

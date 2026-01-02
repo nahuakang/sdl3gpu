@@ -461,10 +461,18 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) 
 }
 
 render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
-    x0 := rect.x;
-    y0 := rect.y;
-    x1 := rect.x + rect.w;
-    y1 := rect.y + rect.h;
+    // TODO(Camera2D): When camera zoom/transforms are added, calculate offset dynamically:
+    //   mvp := renderer.view_matrix * renderer.projection;
+    //   x_offset := 0.5 / abs(mvp._11);
+    //   y_offset := 0.5 / abs(mvp._22);
+    // For now, hardcoded 0.5 works since we have 1:1 pixel mapping (no zoom/pan).
+    x_offset := 0.5;
+    y_offset := 0.5;
+
+    x0 := rect.x + x_offset;
+    y0 := rect.y + y_offset;
+    x1 := rect.x + rect.w - x_offset;
+    y1 := rect.y + rect.h - y_offset;
 
     color_vec4 := Vector4.{
         x = color.r.(float32) / 255.0,
@@ -485,7 +493,7 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
     array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
 
-    // Left edge (now closes the loop properly)
+    // Left edge
     array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
 

@@ -6,6 +6,7 @@ TODO
 - [ ] Figure out why the lettuce have white background
 - [ ] How to keep aspect ratio when window is resized
 - [ ] How to do a 2D camera if we display a larger background than the window size
+- [ ] We need 2 render passes, 1 for world space rendering and 1 for screen space UI
 - [ ] How to display a large background (but not a tilemap)
 - [ ] How to render to texture
 - [x] Implement render_rect

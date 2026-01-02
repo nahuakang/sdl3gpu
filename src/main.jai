@@ -139,8 +139,8 @@ main :: () {
     renderer.projection = orthographic_projection_matrix(
         left = 0,
         right = drawable_width.(float),
-        bottom = 0,
-        top = drawable_height.(float),
+        bottom = drawable_height.(float),
+        top = 0,
         near = 0,
         far = 1,
     );
@@ -176,8 +176,8 @@ main :: () {
                     renderer.projection = orthographic_projection_matrix(
                         left = 0,
                         right = drawable_width.(float),
-                        bottom = 0,
-                        top = drawable_height.(float),
+                        bottom = drawable_height.(float),
+                        top = 0,
                         near = 0,
                         far = 1,
                     );
@@ -193,7 +193,7 @@ main :: () {
         bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
         render_texture(*renderer, bg_texture, *bg_src_rect, null);
 
-        large_line_rect := sdl.F_Rect.{100, 100, 800, 800};
+        large_line_rect := sdl.F_Rect.{100, 100, 700, 700};
         large_line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *large_line_rect, *large_line_color);
 
@@ -219,6 +219,9 @@ main :: () {
         line_rect := sdl.F_Rect.{1000, 500, 200, 200};
         line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *line_rect, *line_color);
+
+        line_rect_a := sdl.F_Rect.{10, 50, 200, 200};
+        render_rect(*renderer, *line_rect_a, *line_color);
 
         end_frame(*renderer);
     }

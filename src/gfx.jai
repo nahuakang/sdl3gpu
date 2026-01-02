@@ -391,9 +391,9 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     y1 := dst_rect.y + dst_rect.h;
 
     u0 := src_rect.x / cast(float)texture.width;
-    v0 := src_rect.y / cast(float)texture.height;
     u1 := (src_rect.x + src_rect.w) / cast(float)texture.width;
-    v1 := (src_rect.y + src_rect.h) / cast(float)texture.height;
+    v0 := (src_rect.y + src_rect.h) / cast(float)texture.height; // NOTE(nahua): Texture sampling - v0 and v1 flipped to draw UV upside down since (0, 0) is upper left corner
+    v1 := src_rect.y / cast(float)texture.height;                // NOTE(nahua): Texture sampling - v0 and v1 flipped to draw UV upside down since (0, 0) is upper left corner
 
     base_vertex := cast(u16)renderer.batch_vertices.count;
 
@@ -473,15 +473,19 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
         w = color.a.(float32) / 255.0,
     };
 
+    // Top edge
     array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
 
+    // Right edge
     array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
 
+    // Bottom edge
     array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
 
+    // Left edge (now closes the loop properly)
     array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
 

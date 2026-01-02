@@ -5,8 +5,7 @@ TODO
 - [x] Review the entire flow for draw triangles again
 - [ ] Figure out why the lettuce have white background
 - [ ] How to keep aspect ratio when window is resized
-- [ ] How to do a 2D camera if we display a larger background than the window size
-- [ ] We need 2 render passes, 1 for world space rendering and 1 for screen space UI
+- [x] How to do a 2D camera with pan/zoom (WASD + mouse wheel)
 - [ ] How to display a large background (but not a tilemap)
 - [ ] How to render to texture
 - [x] Implement render_rect
@@ -43,7 +42,11 @@ img :: #import "SDL3/image";
 WINDOW_WIDTH  :: 1920;
 WINDOW_HEIGHT :: 1080;
 
+CAMERA_PAN_SPEED :: 300.0;  // pixels per second
+CAMERA_ZOOM_SPEED :: 0.1;   // zoom change per scroll tick
+
 base_path: string;
+move_camera: bool;
 
 main :: () {
     if !sdl.init(sdl.Init_Flags.VIDEO) {
@@ -146,6 +149,9 @@ main :: () {
         far = 1,
     );
 
+    // Initialize camera at origin with 1.0 zoom
+    renderer.camera = create_camera();
+
     renderer.white_texture = create_white_texture(*renderer);
     if renderer.white_texture == null {
         log_error("Failed to create white texture for renderer: %\n", to_string(sdl.get_error()));
@@ -164,7 +170,13 @@ main :: () {
     }
 
     exit := false;
+    last_time := sdl.get_ticks_ns();
+
     while !exit {
+        current_time := sdl.get_ticks_ns();
+        delta_time := cast(float)(current_time - last_time) / 1_000_000_000.0;  // Convert to seconds
+        last_time = current_time;
+
         event: sdl.Event;
         while sdl.poll_event(*event) {
             if event.type == {
@@ -182,9 +194,25 @@ main :: () {
                         near = 0,
                         far = 1,
                     );
+                case .MOUSE_WHEEL;
+                    // Zoom with mouse wheel
+                    zoom_delta := event.wheel.y * CAMERA_ZOOM_SPEED;
+                    renderer.camera.zoom += zoom_delta;
+                    // Clamp zoom to reasonable values
+                    if renderer.camera.zoom < 0.1 renderer.camera.zoom = 0.1;
+                    if renderer.camera.zoom > 5.0 renderer.camera.zoom = 5.0;
             }
         }
 
+        // Camera pan with WASD
+        if move_camera {
+            num_keys: s32;
+            keyboard_state := sdl.get_keyboard_state(*num_keys);
+            if keyboard_state[sdl.Scancode.W] renderer.camera.position.y -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.S] renderer.camera.position.y += cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.A] renderer.camera.position.x -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.D] renderer.camera.position.x += cast(float32)(CAMERA_PAN_SPEED * delta_time);
+        }
         if !begin_frame(*renderer) {
             log_error("Failed to begin frame\n");
             return;
@@ -213,16 +241,13 @@ main :: () {
         dst4 := sdl.F_Rect.{450, 450, 180, 180};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
 
-        rect := sdl.F_Rect.{700, 700, 200, 200};
+        rect := sdl.F_Rect.{600, 600, 200, 200};
         color := sdl.Color.{0, 255, 0, 255};
         render_fill_rect(*renderer, *rect, *color);
 
         line_rect := sdl.F_Rect.{1000, 500, 200, 200};
         line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *line_rect, *line_color);
-
-        line_rect_a := sdl.F_Rect.{10, 50, 200, 200};
-        render_rect(*renderer, *line_rect_a, *line_color);
 
         end_frame(*renderer);
     }

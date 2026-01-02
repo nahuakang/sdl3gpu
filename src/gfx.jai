@@ -1,3 +1,21 @@
+Camera_2D :: struct {
+    position: Vector2;  // Camera position in world space
+    zoom: float = 1.0;  // Zoom level (1.0 = normal, 2.0 = zoomed in 2x)
+}
+
+create_camera :: () -> Camera_2D {
+    camera: Camera_2D;
+    camera.position = .{0, 0};
+    camera.zoom = 1.0;
+    return camera;
+}
+
+get_view_matrix :: (camera: *Camera_2D) -> Matrix4 {
+    translation := make_translation_matrix4({-camera.position.x, -camera.position.y, 0});
+    scale := make_scale_matrix4({camera.zoom, camera.zoom, 1.0});
+    return scale * translation;  // Order: scale * translation
+}
+
 UBO :: struct {
     mvp: Matrix4;
 }
@@ -51,6 +69,8 @@ Renderer :: struct {
     max_lines_per_batch: int;
 
     projection: Matrix4;
+    view: Matrix4;
+    camera: Camera_2D;
 
     white_texture: *Texture;
 }
@@ -245,6 +265,8 @@ begin_frame :: (renderer: *Renderer) -> bool {
 
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
 
+    renderer.view = get_view_matrix(*renderer.camera);
+
     return true;
 }
 
@@ -294,7 +316,11 @@ flush_triangles :: (renderer: *Renderer) {
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.quad_vertex_buffer};
     index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.quad_index_buffer};
 
-    ubo := UBO.{ mvp = renderer.projection };
+    // Compute MVP with camera
+    view := get_view_matrix(*renderer.camera);
+    mvp := renderer.projection * view;
+
+    ubo := UBO.{ mvp = mvp };
     sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.quad_pipeline);
     sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
     sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
@@ -317,14 +343,14 @@ flush_lines :: (renderer: *Renderer) {
     sdl.end_gpu_render_pass(renderer.current_render_pass);
 
     vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.line_vertices.count);
-    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer, false);  // Changed
+    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer, false);
     memcpy(transfer_data, renderer.line_vertices.data, vertex_size);
-    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);  // Changed
+    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);
 
     copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
 
     vertex_location: sdl.GPU_Transfer_Buffer_Location;
-    vertex_location.transfer_buffer = renderer.line_transfer_buffer;  // Changed
+    vertex_location.transfer_buffer = renderer.line_transfer_buffer;
     vertex_region: sdl.GPU_Buffer_Region;
     vertex_region.buffer = renderer.line_vertex_buffer;
     vertex_region.size = vertex_size;
@@ -340,7 +366,11 @@ flush_lines :: (renderer: *Renderer) {
 
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.line_vertex_buffer};
 
-    ubo := UBO.{ mvp = renderer.projection };
+    // Compute MVP with camera
+    view := get_view_matrix(*renderer.camera);
+    mvp := renderer.projection * view;
+
+    ubo := UBO.{ mvp = mvp };
     sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.line_pipeline);
     sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
     sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
@@ -461,13 +491,11 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) 
 }
 
 render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
-    // TODO(Camera2D): When camera zoom/transforms are added, calculate offset dynamically:
-    //   mvp := renderer.view_matrix * renderer.projection;
-    //   x_offset := 0.5 / abs(mvp._11);
-    //   y_offset := 0.5 / abs(mvp._22);
-    // For now, hardcoded 0.5 works since we have 1:1 pixel mapping (no zoom/pan).
-    x_offset := 0.5;
-    y_offset := 0.5;
+    // 0.5 pixel offset to align lines to pixel centers for crisp rendering.
+    // Works in pixel space (before projection/view transforms are applied),
+    // so camera zoom/pan will correctly transform these adjusted coordinates.
+    x_offset : float32 : 0.5;
+    y_offset : float32 : 0.5;
 
     x0 := rect.x + x_offset;
     y0 := rect.y + y_offset;
@@ -481,19 +509,15 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
         w = color.a.(float32) / 255.0,
     };
 
-    // Top edge
     array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
 
-    // Right edge
     array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
 
-    // Bottom edge
     array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
 
-    // Left edge
     array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
     array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
 

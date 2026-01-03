@@ -265,6 +265,8 @@ load_texture :: (renderer: *Renderer, path: string) -> *Texture {
 }
 
 begin_frame :: (renderer: *Renderer) -> bool {
+    time_begin_frame();
+
     renderer.current_cmd = sdl.acquire_gpu_command_buffer(renderer.device);
     if !renderer.current_cmd {
         log_error("SDL_AcquireGPUCommandBuffer failed: %\n", to_string(sdl.get_error()));
@@ -283,6 +285,16 @@ begin_frame :: (renderer: *Renderer) -> bool {
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
 
     return true;
+}
+
+end_frame :: (renderer: *Renderer) {
+    flush(renderer);
+    sdl.end_gpu_render_pass(renderer.current_render_pass);
+    sdl.submit_gpu_command_buffer(renderer.current_cmd);
+    renderer.current_render_pass = null;
+    renderer.current_cmd = null;
+
+    time_end_frame();
 }
 
 // Begin camera mode - call this before drawing with camera
@@ -422,14 +434,6 @@ flush_lines :: (renderer: *Renderer) {
 flush :: (renderer: *Renderer) {
     flush_triangles(renderer);
     flush_lines(renderer);
-}
-
-end_frame :: (renderer: *Renderer) {
-    flush(renderer);
-    sdl.end_gpu_render_pass(renderer.current_render_pass);
-    sdl.submit_gpu_command_buffer(renderer.current_cmd);
-    renderer.current_render_pass = null;
-    renderer.current_cmd = null;
 }
 
 render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst: *sdl.F_Rect) {

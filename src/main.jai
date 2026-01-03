@@ -28,7 +28,6 @@ TODO
 
 */
 
-
 #import "Basic";
 #import "File";
 #import "Math";
@@ -41,6 +40,7 @@ img :: #import "SDL3/image";
 #load "image.jai";
 #load "matrix.jai";
 #load "shader.jai";
+#load "time.jai";
 
 WINDOW_WIDTH  :: 1920;
 WINDOW_HEIGHT :: 1080;
@@ -49,6 +49,7 @@ CAMERA_PAN_SPEED :: 300.0;  // pixels per second
 CAMERA_ZOOM_SPEED :: 0.1;   // zoom change per scroll tick
 
 base_path: string;
+
 use_camera: bool; // Toggle with SPACE key
 
 main :: () {
@@ -173,13 +174,12 @@ main :: () {
         return;
     }
 
-    exit := false;
-    last_time := sdl.get_ticks_ns();
+    time_init();
+    set_target_fps(60);
 
+    exit := false;
     while !exit {
-        current_time := sdl.get_ticks_ns();
-        delta_time := cast(float)(current_time - last_time) / 1_000_000_000.0;  // Convert to seconds
-        last_time = current_time;
+        dt = get_frame_time();
 
         event: sdl.Event;
         while sdl.poll_event(*event) {
@@ -216,10 +216,10 @@ main :: () {
         if use_camera {
             num_keys: s32;
             keyboard_state := sdl.get_keyboard_state(*num_keys);
-            if keyboard_state[sdl.Scancode.W] camera.target.y -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
-            if keyboard_state[sdl.Scancode.S] camera.target.y += cast(float32)(CAMERA_PAN_SPEED * delta_time);
-            if keyboard_state[sdl.Scancode.A] camera.target.x -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
-            if keyboard_state[sdl.Scancode.D] camera.target.x += cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.W] camera.target.y -= cast(float32)(CAMERA_PAN_SPEED * dt);
+            if keyboard_state[sdl.Scancode.S] camera.target.y += cast(float32)(CAMERA_PAN_SPEED * dt);
+            if keyboard_state[sdl.Scancode.A] camera.target.x -= cast(float32)(CAMERA_PAN_SPEED * dt);
+            if keyboard_state[sdl.Scancode.D] camera.target.x += cast(float32)(CAMERA_PAN_SPEED * dt);
         }
 
         if !begin_frame(*renderer) {

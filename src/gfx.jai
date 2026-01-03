@@ -1,19 +1,36 @@
 Camera_2D :: struct {
-    position: Vector2;  // Camera position in world space
-    zoom: float = 1.0;  // Zoom level (1.0 = normal, 2.0 = zoomed in 2x)
+    target: Vector2;     // Camera target (world space point to map to the origin; what we're looking at in world space)
+    offset: Vector2;     // Camera offset (window origin in screen space; or displacement from target in screen space)
+    rotation: float;     // Camera rotation in degrees
+    zoom: float = 1.0;   // Zoom level (1.0 = normal, 2.0 = zoomed in 2x)
 }
 
 create_camera :: () -> Camera_2D {
     camera: Camera_2D;
-    camera.position = .{0, 0};
+    camera.target = .{0, 0};
+    camera.offset = .{0, 0};
+    camera.rotation = 0;
     camera.zoom = 1.0;
     return camera;
 }
 
 get_view_matrix :: (camera: *Camera_2D) -> Matrix4 {
-    translation := make_translation_matrix4({-camera.position.x, -camera.position.y, 0});
-    scale := make_scale_matrix4({camera.zoom, camera.zoom, 1.0});
-    return scale * translation;  // Order: scale * translation
+    // 1. Translate by -target (move world so target is at origin)
+    // 2. Rotate
+    // 3. Scale by zoom
+    // 4. Translate by offset (move to screen position)
+
+    mat_origin := make_translation_matrix4({-camera.target.x, -camera.target.y, 0});
+
+    // Rotation in degrees, convert to radians
+    angle_rad := camera.rotation * (PI / 180.0);
+    mat_rotation := make_rotation_matrix4_2d(angle_rad);
+
+    mat_scale := make_scale_matrix4({camera.zoom, camera.zoom, 1.0});
+    mat_translation := make_translation_matrix4({camera.offset.x, camera.offset.y, 0});
+
+    // Combine: offset * scale * rotation * (-target)
+    return mat_translation * mat_scale * mat_rotation * mat_origin;
 }
 
 UBO :: struct {
@@ -69,8 +86,8 @@ Renderer :: struct {
     max_lines_per_batch: int;
 
     projection: Matrix4;
-    view: Matrix4;
-    camera: Camera_2D;
+
+    camera: *Camera_2D; // Set when calling begin_camera_mode
 
     white_texture: *Texture;
 }
@@ -265,9 +282,19 @@ begin_frame :: (renderer: *Renderer) -> bool {
 
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
 
-    renderer.view = get_view_matrix(*renderer.camera);
-
     return true;
+}
+
+// Begin camera mode - call this before drawing with camera
+begin_camera_mode :: (renderer: *Renderer, camera: *Camera_2D) {
+    flush(renderer); // Flush any pending screen-space draws
+    renderer.camera = camera;
+}
+
+// End camera mode - call this to go back to screen coordinates
+end_camera_mode :: (renderer: *Renderer) {
+    flush(renderer); // Flush any pending camera-space draws
+    renderer.camera = null;
 }
 
 flush_triangles :: (renderer: *Renderer) {
@@ -316,9 +343,14 @@ flush_triangles :: (renderer: *Renderer) {
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.quad_vertex_buffer};
     index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.quad_index_buffer};
 
-    // Compute MVP with camera
-    view := get_view_matrix(*renderer.camera);
-    mvp := renderer.projection * view;
+    // Compute MVP - use camera only if use_camera is true
+    mvp: Matrix4;
+    if renderer.camera {
+        view := get_view_matrix(renderer.camera);
+        mvp = renderer.projection * view;
+    } else {
+        mvp = renderer.projection;
+    }
 
     ubo := UBO.{ mvp = mvp };
     sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.quad_pipeline);
@@ -366,9 +398,14 @@ flush_lines :: (renderer: *Renderer) {
 
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.line_vertex_buffer};
 
-    // Compute MVP with camera
-    view := get_view_matrix(*renderer.camera);
-    mvp := renderer.projection * view;
+    // Compute MVP - use camera only if use_camera is true
+    mvp: Matrix4;
+    if renderer.camera {
+        view := get_view_matrix(renderer.camera);
+        mvp = renderer.projection * view;
+    } else {
+        mvp = renderer.projection;
+    }
 
     ubo := UBO.{ mvp = mvp };
     sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.line_pipeline);

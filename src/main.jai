@@ -6,6 +6,7 @@ TODO
 - [ ] Figure out why the lettuce have white background
 - [ ] How to keep aspect ratio when window is resized
 - [x] How to do a 2D camera with pan/zoom (WASD + mouse wheel)
+- [ ] Proper window resize handling
 - [ ] How to display a large background (but not a tilemap)
 - [ ] How to render to texture
 - [x] Implement render_rect
@@ -37,6 +38,7 @@ img :: #import "SDL3/image";
 #load "asset.jai";
 #load "gfx.jai";
 #load "image.jai";
+#load "matrix.jai";
 #load "shader.jai";
 
 WINDOW_WIDTH  :: 1920;
@@ -46,7 +48,7 @@ CAMERA_PAN_SPEED :: 300.0;  // pixels per second
 CAMERA_ZOOM_SPEED :: 0.1;   // zoom change per scroll tick
 
 base_path: string;
-move_camera: bool;
+use_camera: bool; // Toggle with SPACE key
 
 main :: () {
     if !sdl.init(sdl.Init_Flags.VIDEO) {
@@ -150,7 +152,8 @@ main :: () {
     );
 
     // Initialize camera at origin with 1.0 zoom
-    renderer.camera = create_camera();
+    camera := create_camera();
+    camera.offset = {0, 0};
 
     renderer.white_texture = create_white_texture(*renderer);
     if renderer.white_texture == null {
@@ -181,7 +184,9 @@ main :: () {
         while sdl.poll_event(*event) {
             if event.type == {
                 case .QUIT; exit = true;
-                case .KEY_UP; if event.key.key == .ESCAPE exit = true;
+                case .KEY_UP;
+                    if event.key.key == .ESCAPE exit = true;
+                    if event.key.key == .SPACE use_camera = !use_camera;
                 case .WINDOW_RESIZED;
                 case .WINDOW_PIXEL_SIZE_CHANGED;
                     drawable_width, drawable_height: s32;
@@ -195,28 +200,33 @@ main :: () {
                         far = 1,
                     );
                 case .MOUSE_WHEEL;
-                    // Zoom with mouse wheel
-                    zoom_delta := event.wheel.y * CAMERA_ZOOM_SPEED;
-                    renderer.camera.zoom += zoom_delta;
-                    // Clamp zoom to reasonable values
-                    if renderer.camera.zoom < 0.1 renderer.camera.zoom = 0.1;
-                    if renderer.camera.zoom > 5.0 renderer.camera.zoom = 5.0;
+                    if use_camera {
+                        // Zoom with mouse wheel
+                        zoom_delta := event.wheel.y * CAMERA_ZOOM_SPEED;
+                        camera.zoom += zoom_delta;
+                        // Clamp zoom to reasonable values
+                        if camera.zoom < 0.1 camera.zoom = 0.1;
+                        if camera.zoom > 5.0 camera.zoom = 5.0;
+                    }
             }
         }
 
         // Camera pan with WASD
-        if move_camera {
+        if use_camera {
             num_keys: s32;
             keyboard_state := sdl.get_keyboard_state(*num_keys);
-            if keyboard_state[sdl.Scancode.W] renderer.camera.position.y -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
-            if keyboard_state[sdl.Scancode.S] renderer.camera.position.y += cast(float32)(CAMERA_PAN_SPEED * delta_time);
-            if keyboard_state[sdl.Scancode.A] renderer.camera.position.x -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
-            if keyboard_state[sdl.Scancode.D] renderer.camera.position.x += cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.W] camera.target.y -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.S] camera.target.y += cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.A] camera.target.x -= cast(float32)(CAMERA_PAN_SPEED * delta_time);
+            if keyboard_state[sdl.Scancode.D] camera.target.x += cast(float32)(CAMERA_PAN_SPEED * delta_time);
         }
+
         if !begin_frame(*renderer) {
             log_error("Failed to begin frame\n");
             return;
         }
+
+        begin_camera_mode(*renderer, *camera);
 
         // Draw bg
         bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
@@ -248,6 +258,8 @@ main :: () {
         line_rect := sdl.F_Rect.{1000, 500, 200, 200};
         line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *line_rect, *line_color);
+
+        end_camera_mode(*renderer);
 
         end_frame(*renderer);
     }

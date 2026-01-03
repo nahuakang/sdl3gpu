@@ -1,5 +1,7 @@
 .build
 src/.build
 build/sdl3gpu.dSYM
+build/sdl3gpu.exe
+build/sdl3gpu.pdb
 .DS_Store
 *.sublime-workspace

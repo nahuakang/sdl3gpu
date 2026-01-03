@@ -438,7 +438,7 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
         dst_rect = dst.*;
     } else {
         drawable_width, drawable_height: s32;
-        sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
+        sdl.get_window_size(renderer.window, *drawable_width, *drawable_height);
         dst_rect = sdl.F_Rect.{0, 0, drawable_width.(float), drawable_height.(float)};
     }
 

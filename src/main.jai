@@ -8,7 +8,8 @@ TODO
 - [x] How to do a 2D camera with pan/zoom (WASD + mouse wheel)
 - [ ] Proper window resize handling
 - [ ] How to display a large background (but not a tilemap)
-- [ ] How to render to texture
+- [ ] How to render to texture with a fixed internal resolution (for pixel art)
+- [ ] Set target FPS
 - [x] Implement render_rect
 - [x] Implement render_fill_rect
 - [ ] Implement basic text rendering
@@ -141,7 +142,7 @@ main :: () {
     renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
 
     drawable_width, drawable_height: s32;
-    sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
+    sdl.get_window_size(renderer.window, *drawable_width, *drawable_height);
     renderer.projection = orthographic_projection_matrix(
         left = 0,
         right = drawable_width.(float),

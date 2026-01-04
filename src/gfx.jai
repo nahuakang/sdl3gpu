@@ -58,10 +58,17 @@ Draw_Call :: struct {
 Renderer :: struct {
     device: *sdl.GPU_Device;
     window: *sdl.Window;
+    camera: *Camera_2D; // Set when calling begin_camera_mode
+
+    viewport: sdl.GPU_Viewport;
+    target_width: s32 = 640;
+    target_height: s32 = 360;
+    use_viewport: bool = true;
 
     current_render_pass: *sdl.GPU_Render_Pass;
     current_cmd: *sdl.GPU_Command_Buffer;
     swapchain_texture: *sdl.GPU_Texture;
+    white_texture: *Texture;
 
     quad_pipeline: *sdl.GPU_Graphics_Pipeline;
     line_pipeline: *sdl.GPU_Graphics_Pipeline;
@@ -86,10 +93,6 @@ Renderer :: struct {
     max_lines_per_batch: int;
 
     projection: Matrix4;
-
-    camera: *Camera_2D; // Set when calling begin_camera_mode
-
-    white_texture: *Texture;
 }
 
 create_pipeline :: (
@@ -283,6 +286,7 @@ begin_frame :: (renderer: *Renderer) -> bool {
     color_target.store_op = .STORE;
 
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
+    if renderer.use_viewport then sdl.set_gpu_viewport(renderer.current_render_pass, *renderer.viewport);
 
     return true;
 }
@@ -307,6 +311,29 @@ begin_camera_mode :: (renderer: *Renderer, camera: *Camera_2D) {
 end_camera_mode :: (renderer: *Renderer) {
     flush(renderer); // Flush any pending camera-space draws
     renderer.camera = null;
+}
+
+// Calculate and set renderer viewport for letterbox or pillarbox display
+set_viewport :: (renderer: *Renderer, window_width: s32, window_height: s32) {
+    target_aspect := cast(float32) renderer.target_width / cast(float32) renderer.target_height;
+    window_aspect := cast(float32) window_width / cast(float32) window_height;
+
+    if window_aspect > target_aspect {
+        // Pillarbox (clear-color bars on left & right)
+        renderer.viewport.h = cast(float32) window_height;
+        renderer.viewport.w = renderer.viewport.h * target_aspect;
+        renderer.viewport.x = ((cast(float32) window_width) - renderer.viewport.w) * 0.5;
+        renderer.viewport.y = 0;
+    } else {
+        // Letter box (clear-color bars on top & bottom)
+        renderer.viewport.w = cast(float32) window_width;
+        renderer.viewport.h = renderer.viewport.w / target_aspect;
+        renderer.viewport.x = 0;
+        renderer.viewport.y = ((cast(float32) window_height) - renderer.viewport.h) * 0.5;
+    }
+
+    renderer.viewport.min_depth = 0.0;
+    renderer.viewport.max_depth = 1.0;
 }
 
 flush_triangles :: (renderer: *Renderer) {
@@ -350,6 +377,7 @@ flush_triangles :: (renderer: *Renderer) {
     color_target.load_op = .LOAD;
     color_target.store_op = .STORE;
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
+    if renderer.use_viewport then sdl.set_gpu_viewport(renderer.current_render_pass, *renderer.viewport);
 
     // Bind and draw
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.quad_vertex_buffer};
@@ -407,6 +435,7 @@ flush_lines :: (renderer: *Renderer) {
     color_target.load_op = .LOAD;
     color_target.store_op = .STORE;
     renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
+    if renderer.use_viewport then sdl.set_gpu_viewport(renderer.current_render_pass, *renderer.viewport);
 
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.line_vertex_buffer};
 
@@ -441,9 +470,14 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     if dst != null {
         dst_rect = dst.*;
     } else {
-        drawable_width, drawable_height: s32;
-        sdl.get_window_size(renderer.window, *drawable_width, *drawable_height);
-        dst_rect = sdl.F_Rect.{0, 0, drawable_width.(float), drawable_height.(float)};
+        if renderer.use_viewport {
+            // Fill entire viewport (game coordinates, not window pixels)
+            dst_rect = sdl.F_Rect.{0, 0, cast(float)renderer.target_width, cast(float)renderer.target_height};
+        } else {
+            drawable_width, drawable_height: s32;
+            sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
+            dst_rect = sdl.F_Rect.{0, 0, drawable_width.(float), drawable_height.(float)};
+        }
     }
 
     src_rect: sdl.F_Rect;

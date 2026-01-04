@@ -59,6 +59,7 @@ main :: () {
     }
 
     renderer: Renderer;
+    renderer.use_viewport = true;
     renderer.device = sdl.create_gpu_device(
         sdl.GPU_Shader_Format.SPIRV | sdl.GPU_Shader_Format.DXIL | sdl.GPU_Shader_Format.MSL,
         true, null
@@ -143,15 +144,27 @@ main :: () {
     renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
 
     drawable_width, drawable_height: s32;
-    sdl.get_window_size(renderer.window, *drawable_width, *drawable_height);
-    renderer.projection = orthographic_projection_matrix(
-        left = 0,
-        right = drawable_width.(float),
-        bottom = drawable_height.(float),
-        top = 0,
-        near = 0,
-        far = 1,
-    );
+    sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
+    if renderer.use_viewport {
+        set_viewport(*renderer, drawable_width, drawable_height);
+        renderer.projection = orthographic_projection_matrix(
+            left = 0,
+            right = cast(float)renderer.target_width,
+            bottom = cast(float)renderer.target_height,
+            top = 0,
+            near = 0,
+            far = 1,
+        );
+    } else {
+        renderer.projection = orthographic_projection_matrix(
+            left = 0,
+            right = drawable_width.(float),
+            bottom = drawable_height.(float),
+            top = 0,
+            near = 0,
+            far = 1,
+        );
+    }
 
     // Initialize camera at origin with 1.0 zoom
     camera := create_camera();
@@ -190,16 +203,21 @@ main :: () {
                     if event.key.key == .SPACE use_camera = !use_camera;
                 case .WINDOW_RESIZED;
                 case .WINDOW_PIXEL_SIZE_CHANGED;
+                    // The projection matrix stays fixed at target resolution; the viewport handles the aspect ratio
                     drawable_width, drawable_height: s32;
                     sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
-                    renderer.projection = orthographic_projection_matrix(
-                        left = 0,
-                        right = drawable_width.(float),
-                        bottom = drawable_height.(float),
-                        top = 0,
-                        near = 0,
-                        far = 1,
-                    );
+                    if renderer.use_viewport {
+                        set_viewport(*renderer, drawable_width, drawable_height);
+                    } else {
+                        renderer.projection = orthographic_projection_matrix(
+                            left = 0,
+                            right = drawable_width.(float),
+                            bottom = drawable_height.(float),
+                            top = 0,
+                            near = 0,
+                            far = 1,
+                        );
+                    }
                 case .MOUSE_WHEEL;
                     if use_camera {
                         // Zoom with mouse wheel
@@ -233,30 +251,30 @@ main :: () {
         bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
         render_texture(*renderer, bg_texture, *bg_src_rect, null);
 
-        large_line_rect := sdl.F_Rect.{100, 100, 700, 700};
+        large_line_rect := sdl.F_Rect.{50, 50, 300, 250};  // Scaled down, fits in viewport
         large_line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *large_line_rect, *large_line_color);
 
         // Draw multiple lettuces at different positions
         lettuce_src_rect := sdl.F_Rect.{0, 0, cast(float)lettuce_texture.width, cast(float)lettuce_texture.height};
 
-        dst1 := sdl.F_Rect.{0, 0, 150, 150};
+        dst1 := sdl.F_Rect.{0, 0, 80, 80};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst1);
 
-        dst2 := sdl.F_Rect.{150, 150, 200, 200};
+        dst2 := sdl.F_Rect.{90, 90, 100, 100};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst2);
 
-        dst3 := sdl.F_Rect.{350, 350, 100, 100};
+        dst3 := sdl.F_Rect.{200, 200, 60, 60};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst3);
 
-        dst4 := sdl.F_Rect.{450, 450, 180, 180};
+        dst4 := sdl.F_Rect.{270, 270, 90, 90};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
 
-        rect := sdl.F_Rect.{600, 600, 200, 200};
+        rect := sdl.F_Rect.{400, 200, 100, 100};  // Moved to fit
         color := sdl.Color.{0, 255, 0, 255};
         render_fill_rect(*renderer, *rect, *color);
 
-        line_rect := sdl.F_Rect.{1000, 500, 200, 200};
+        line_rect := sdl.F_Rect.{450, 50, 150, 150};  // Moved to fit in 640x360
         line_color := sdl.Color.{0, 255, 0, 255};
         render_rect(*renderer, *line_rect, *line_color);
 

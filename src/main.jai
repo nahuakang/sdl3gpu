@@ -53,128 +53,14 @@ base_path: string;
 use_camera: bool; // Toggle with SPACE key
 
 main :: () {
-    if !sdl.init(sdl.Init_Flags.VIDEO) {
-        log_error("Could not initialize SDL: %\n", to_string(sdl.get_error()));
-        return;
-    }
-
-    renderer: Renderer;
-    renderer.use_viewport = true;
-    renderer.device = sdl.create_gpu_device(
-        sdl.GPU_Shader_Format.SPIRV | sdl.GPU_Shader_Format.DXIL | sdl.GPU_Shader_Format.MSL,
-        true, null
-    );
-    if !renderer.device {
-        log_error("SDL_CreateDevice failed: %\n", to_string(sdl.get_error()));
-        return;
-    }
-
-    renderer.window = sdl.create_window("SDL3 GPU in Jai", WINDOW_WIDTH, WINDOW_HEIGHT, sdl.Window_Flags.RESIZABLE);
-    if !renderer.window {
-        log_error("Could not create window: %\n", to_string(sdl.get_error()));
-        return;
-    }
-
-    if !sdl.claim_window_for_gpu_device(renderer.device, renderer.window) {
-        log_error("SDL_ClaimWindowForGPUDevice failed: %\n", to_string(sdl.get_error()));
-        return;
-    }
-
     initialize_asset_loader();
 
-    vertex_shader := load_shader(renderer.device, "assets/shaders/basic2d.vert", 0, 1, 0, 0);
-    if !vertex_shader {
-        log_error("Failed to create vertex shader\n");
-        return;
-    }
-
-    fragment_shader := load_shader(renderer.device, "assets/shaders/basic2d.frag", 1, 0, 0, 0);
-    if !fragment_shader {
-        log_error("Failed to create fragment shader\n");
-        return;
-    }
-
-    vertex_buffer_desc: sdl.GPU_Vertex_Buffer_Description;
-    vertex_buffer_desc.pitch = size_of(Vertex_Data);
-    vertex_buffer_desc.input_rate = .VERTEX;
-
-    vertex_attributes: [3]sdl.GPU_Vertex_Attribute = .[
-        {location = 0, buffer_slot = 0, format = .FLOAT3, offset = 0},
-        {location = 1, buffer_slot = 0, format = .FLOAT4, offset = size_of(Vector3)},
-        {location = 2, buffer_slot = 0, format = .FLOAT2, offset = size_of(Vector3) + size_of(Vector4)}
-    ];
-
-    vertex_input_state: sdl.GPU_Vertex_Input_State;
-    vertex_input_state.num_vertex_buffers = 1;
-    vertex_input_state.vertex_buffer_descriptions = *vertex_buffer_desc;
-    vertex_input_state.num_vertex_attributes = vertex_attributes.count;
-    vertex_input_state.vertex_attributes = vertex_attributes.data;
-
-    renderer.quad_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .TRIANGLELIST, enable_blend=true);
-    if !renderer.quad_pipeline {
-        log_error("Failed to create triangle pipeline\n");
-        return;
-    }
-
-    renderer.line_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .LINELIST);
-    if !renderer.line_pipeline {
-        log_error("Failed to create line pipeline\n");
-        return;
-    }
-
-    sdl.release_gpu_shader(renderer.device, vertex_shader);
-    sdl.release_gpu_shader(renderer.device, fragment_shader);
-
-    renderer.sampler = create_sampler(renderer.device);
-    renderer.max_sprites_per_batch = 1000;
-    renderer.max_lines_per_batch = 1000;
-
-    renderer.quad_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4), "Vertex Buffer");
-    renderer.quad_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_sprites_per_batch * 6), "Index Buffer");
-    renderer.line_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2), "Line Vertex Buffer");
-
-    quad_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
-    quad_transfer_buffer_info.usage = .UPLOAD;
-    quad_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4 + size_of(u16) * renderer.max_sprites_per_batch * 6);
-    renderer.quad_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *quad_transfer_buffer_info);
-
-    line_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
-    line_transfer_buffer_info.usage = .UPLOAD;
-    line_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2);
-    renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
-
-    drawable_width, drawable_height: s32;
-    sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
-    if renderer.use_viewport {
-        set_viewport(*renderer, drawable_width, drawable_height);
-        renderer.projection = orthographic_projection_matrix(
-            left = 0,
-            right = cast(float)renderer.target_width,
-            bottom = cast(float)renderer.target_height,
-            top = 0,
-            near = 0,
-            far = 1,
-        );
-    } else {
-        renderer.projection = orthographic_projection_matrix(
-            left = 0,
-            right = drawable_width.(float),
-            bottom = drawable_height.(float),
-            top = 0,
-            near = 0,
-            far = 1,
-        );
-    }
+    renderer, ok := renderer_init(WINDOW_WIDTH, WINDOW_HEIGHT, "SDL3 GPU in Jai", use_viewport=true);
+    if !ok return;
 
     // Initialize camera at origin with 1.0 zoom
     camera := create_camera();
     camera.offset = {0, 0};
-
-    renderer.white_texture = create_white_texture(*renderer);
-    if renderer.white_texture == null {
-        log_error("Failed to create white texture for renderer: %\n", to_string(sdl.get_error()));
-        return;
-    }
 
     lettuce_texture := load_texture(*renderer, "assets/images/lettuce.bmp");
     if !lettuce_texture {
@@ -289,16 +175,5 @@ main :: () {
         end_frame(*renderer);
     }
 
-    sdl.release_gpu_transfer_buffer(renderer.device, renderer.quad_transfer_buffer);
-    sdl.release_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);
-    sdl.release_gpu_buffer(renderer.device, renderer.quad_vertex_buffer);
-    sdl.release_gpu_buffer(renderer.device, renderer.quad_index_buffer);
-    sdl.release_gpu_buffer(renderer.device, renderer.line_vertex_buffer);
-    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.quad_pipeline);
-    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.line_pipeline);
-    sdl.release_gpu_sampler(renderer.device, renderer.sampler);
-    sdl.destroy_gpu_device(renderer.device);
-
-    sdl.destroy_window(renderer.window);
-    sdl.quit();
+    renderer_shutdown(*renderer);
 }

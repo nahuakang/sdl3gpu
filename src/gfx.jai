@@ -1,3 +1,5 @@
+/* Renderer */
+
 Camera_2D :: struct {
     target: Vector2;     // Camera target (world space point to map to the origin; what we're looking at in world space)
     offset: Vector2;     // Camera offset (window origin in screen space; or displacement from target in screen space)
@@ -225,48 +227,6 @@ create_white_texture :: (renderer: *Renderer) -> *Texture {
     return texture;
 }
 
-load_texture :: (renderer: *Renderer, path: string) -> *Texture {
-    image_data := load_image(path, 4);
-    if !image_data {
-        log_error("Could not load image: %\n", path);
-        return null;
-    }
-    defer sdl.destroy_surface(image_data);
-
-    texture := New(Texture);
-    texture.width = image_data.w;
-    texture.height = image_data.h;
-    texture.gpu_texture = create_gpu_texture(renderer.device, cast(u32)image_data.w, cast(u32)image_data.h, .R8G8B8A8_UNORM, path);
-
-    // Upload texture data
-    texture_transfer_info: sdl.GPU_Transfer_Buffer_Create_Info;
-    texture_transfer_info.usage = .UPLOAD;
-    texture_transfer_info.size = cast(u32)(image_data.w * image_data.h * 4);
-    texture_transfer := sdl.create_gpu_transfer_buffer(renderer.device, *texture_transfer_info);
-    defer sdl.release_gpu_transfer_buffer(renderer.device, texture_transfer);
-
-    texture_ptr := cast(*u8)sdl.map_gpu_transfer_buffer(renderer.device, texture_transfer, false);
-    memcpy(texture_ptr, image_data.pixels, image_data.w * image_data.h * 4);
-    sdl.unmap_gpu_transfer_buffer(renderer.device, texture_transfer);
-
-    cmd := sdl.acquire_gpu_command_buffer(renderer.device);
-    copy_pass := sdl.begin_gpu_copy_pass(cmd);
-
-    tex_transfer: sdl.GPU_Texture_Transfer_Info;
-    tex_transfer.transfer_buffer = texture_transfer;
-    tex_region: sdl.GPU_Texture_Region;
-    tex_region.texture = texture.gpu_texture;
-    tex_region.w = cast(u32)image_data.w;
-    tex_region.h = cast(u32)image_data.h;
-    tex_region.d = 1;
-    sdl.upload_to_gpu_texture(copy_pass, *tex_transfer, *tex_region, false);
-
-    sdl.end_gpu_copy_pass(copy_pass);
-    sdl.submit_gpu_command_buffer(cmd);
-
-    return texture;
-}
-
 begin_frame :: (renderer: *Renderer) -> bool {
     time_begin_frame();
 
@@ -465,7 +425,59 @@ flush :: (renderer: *Renderer) {
     flush_lines(renderer);
 }
 
+/* Textures */
+
+load_texture :: (renderer: *Renderer, path: string) -> *Texture {
+    image_data := load_image(path, 4);
+    if !image_data {
+        log_error("Could not load image: %\n", path);
+        return null;
+    }
+    defer sdl.destroy_surface(image_data);
+
+    texture := New(Texture);
+    texture.width = image_data.w;
+    texture.height = image_data.h;
+    texture.gpu_texture = create_gpu_texture(renderer.device, cast(u32)image_data.w, cast(u32)image_data.h, .R8G8B8A8_UNORM, path);
+
+    // Upload texture data
+    texture_transfer_info: sdl.GPU_Transfer_Buffer_Create_Info;
+    texture_transfer_info.usage = .UPLOAD;
+    texture_transfer_info.size = cast(u32)(image_data.w * image_data.h * 4);
+    texture_transfer := sdl.create_gpu_transfer_buffer(renderer.device, *texture_transfer_info);
+    defer sdl.release_gpu_transfer_buffer(renderer.device, texture_transfer);
+
+    texture_ptr := cast(*u8)sdl.map_gpu_transfer_buffer(renderer.device, texture_transfer, false);
+    memcpy(texture_ptr, image_data.pixels, image_data.w * image_data.h * 4);
+    sdl.unmap_gpu_transfer_buffer(renderer.device, texture_transfer);
+
+    cmd := sdl.acquire_gpu_command_buffer(renderer.device);
+    copy_pass := sdl.begin_gpu_copy_pass(cmd);
+
+    tex_transfer: sdl.GPU_Texture_Transfer_Info;
+    tex_transfer.transfer_buffer = texture_transfer;
+    tex_region: sdl.GPU_Texture_Region;
+    tex_region.texture = texture.gpu_texture;
+    tex_region.w = cast(u32)image_data.w;
+    tex_region.h = cast(u32)image_data.h;
+    tex_region.d = 1;
+    sdl.upload_to_gpu_texture(copy_pass, *tex_transfer, *tex_region, false);
+
+    sdl.end_gpu_copy_pass(copy_pass);
+    sdl.submit_gpu_command_buffer(cmd);
+
+    return texture;
+}
+
 render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst: *sdl.F_Rect) {
+    render_texture(renderer, texture, src, dst, .{0, 0}, 0.0);
+}
+
+render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst: *sdl.F_Rect, origin: Vector2) {
+    render_texture(renderer, texture, src, dst, origin, 0.0);
+}
+
+render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst: *sdl.F_Rect, origin: Vector2 = .{0, 0}, rotation: float = 0) {
     dst_rect: sdl.F_Rect;
     if dst != null {
         dst_rect = dst.*;
@@ -490,10 +502,39 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
         src_rect.h = cast(float)texture.height;
     }
 
-    x0 := dst_rect.x;
-    y0 := dst_rect.y;
-    x1 := dst_rect.x + dst_rect.w;
-    y1 := dst_rect.y + dst_rect.h;
+    top_left, top_right, bottom_left, bottom_right: Vector2;
+
+    if rotation == 0.0 {
+        x := dst_rect.x - origin.x;
+        y := dst_rect.y - origin.y;
+        top_left = .{x, y};
+        top_right = .{x + dst_rect.w, y};
+        bottom_left = .{x, y + dst_rect.h};
+        bottom_right = .{x + dst_rect.w, y + dst_rect.h};
+    } else {
+        // 2D rotation:
+        // x' = x*cos(θ) - y*sin(θ)
+        // y' = x*sin(θ) + y*cos(θ)
+
+        cos_r := cos(rotation);
+        sin_r := sin(rotation);
+        x := dst_rect.x;
+        y := dst_rect.y;
+        dx := -origin.x;
+        dy := -origin.y;
+
+        top_left.x = x + dx*cos_r - dy*sin_r;
+        top_left.y = y + dx*sin_r + dy*cos_r;
+
+        top_right.x = x + (dx + dst_rect.w)*cos_r - dy*sin_r;
+        top_right.y = y + (dx + dst_rect.w)*sin_r + dy*cos_r;
+
+        bottom_left.x = x + dx*cos_r - (dy + dst_rect.h)*sin_r;
+        bottom_left.y = y + dx*sin_r + (dy + dst_rect.h)*cos_r;
+
+        bottom_right.x = x + (dx + dst_rect.w)*cos_r - (dy + dst_rect.h)*sin_r;
+        bottom_right.y = y + (dx + dst_rect.w)*sin_r + (dy + dst_rect.h)*cos_r;
+    }
 
     u0 := src_rect.x / cast(float)texture.width;
     u1 := (src_rect.x + src_rect.w) / cast(float)texture.width;
@@ -501,11 +542,10 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     v1 := src_rect.y / cast(float)texture.height;                // NOTE(nahua): Texture sampling - v0 and v1 flipped to draw UV upside down since (0, 0) is upper left corner
 
     base_vertex := cast(u16)renderer.batch_vertices.count;
-
-    array_add(*renderer.batch_vertices, .{ position = {x0, y1, 0}, color = {1, 1, 1, 1}, uv = {u0, v0}});
-    array_add(*renderer.batch_vertices, .{ position = {x1, y1, 0}, color = {1, 1, 1, 1}, uv = {u1, v0}});
-    array_add(*renderer.batch_vertices, .{ position = {x1, y0, 0}, color = {1, 1, 1, 1}, uv = {u1, v1}});
-    array_add(*renderer.batch_vertices, .{ position = {x0, y0, 0}, color = {1, 1, 1, 1}, uv = {u0, v1}});
+    array_add(*renderer.batch_vertices, .{ position = {top_left.x, top_left.y, 0}, color = {1, 1, 1, 1}, uv = {u0, v1}});
+    array_add(*renderer.batch_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = {1, 1, 1, 1}, uv = {u0, v0}});
+    array_add(*renderer.batch_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = {1, 1, 1, 1}, uv = {u1, v0}});
+    array_add(*renderer.batch_vertices, .{ position = {top_right.x, top_right.y, 0}, color = {1, 1, 1, 1}, uv = {u1, v1}});
 
     index_start := cast(u32)renderer.batch_indices.count;
     array_add(*renderer.batch_indices, base_vertex + 0);
@@ -526,11 +566,46 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     }
 }
 
+/* Shapes */
+
 render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
-    x0 := rect.x;
-    y0 := rect.y;
-    x1 := rect.x + rect.w;
-    y1 := rect.y + rect.h;
+    render_fill_rect(renderer, rect, color, .{0, 0}, 0.0);
+}
+
+render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origin: Vector2) {
+    render_fill_rect(renderer, rect, color, origin, 0.0);
+}
+
+render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origin: Vector2 = .{0, 0}, rotation: float = 0) {
+    top_left, top_right, bottom_left, bottom_right: Vector2;
+
+    if rotation == 0.0 {
+        x := rect.x - origin.x;
+        y := rect.y - origin.y;
+        top_left = .{x, y};
+        top_right = .{x + rect.w, y};
+        bottom_left = .{x, y + rect.h};
+        bottom_right = .{x + rect.w, y + rect.h};
+    } else {
+        cos_r := cos(rotation);
+        sin_r := sin(rotation);
+        x := rect.x;
+        y := rect.y;
+        dx := -origin.x;
+        dy := -origin.y;
+
+        top_left.x = x + dx*cos_r - dy*sin_r;
+        top_left.y = y + dx*sin_r + dy*cos_r;
+
+        top_right.x = x + (dx + rect.w)*cos_r - dy*sin_r;
+        top_right.y = y + (dx + rect.w)*sin_r + dy*cos_r;
+
+        bottom_left.x = x + dx*cos_r - (dy + rect.h)*sin_r;
+        bottom_left.y = y + dx*sin_r + (dy + rect.h)*cos_r;
+
+        bottom_right.x = x + (dx + rect.w)*cos_r - (dy + rect.h)*sin_r;
+        bottom_right.y = y + (dx + rect.w)*sin_r + (dy + rect.h)*cos_r;
+    }
 
     base_vertex := cast(u16)renderer.batch_vertices.count;
 
@@ -541,10 +616,10 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) 
         w = color.a.(float32) / 255.0,
     };
 
-    array_add(*renderer.batch_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.batch_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.batch_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.batch_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.batch_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.batch_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.batch_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.batch_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
 
     index_start := cast(u32)renderer.batch_indices.count;
     array_add(*renderer.batch_indices, base_vertex + 0);
@@ -566,16 +641,48 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) 
 }
 
 render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
-    // 0.5 pixel offset to align lines to pixel centers for crisp rendering.
-    // Works in pixel space (before projection/view transforms are applied),
-    // so camera zoom/pan will correctly transform these adjusted coordinates.
+    render_rect(renderer, rect, color, .{0, 0}, 0.0);
+}
+
+render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origin: Vector2) {
+    render_rect(renderer, rect, color, origin, 0.0);
+}
+
+render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origin: Vector2 = .{0, 0}, rotation: float = 0) {
     x_offset : float32 : 0.5;
     y_offset : float32 : 0.5;
 
-    x0 := rect.x + x_offset;
-    y0 := rect.y + y_offset;
-    x1 := rect.x + rect.w - x_offset;
-    y1 := rect.y + rect.h - y_offset;
+    top_left, top_right, bottom_left, bottom_right: Vector2;
+
+    if rotation == 0.0 {
+        x := rect.x - origin.x + x_offset;
+        y := rect.y - origin.y + y_offset;
+        top_left = .{x, y};
+        top_right = .{x + rect.w - x_offset*2, y};
+        bottom_left = .{x, y + rect.h - y_offset*2};
+        bottom_right = .{x + rect.w - x_offset*2, y + rect.h - y_offset*2};
+    } else {
+        cos_r := cos(rotation);
+        sin_r := sin(rotation);
+        x := rect.x;
+        y := rect.y;
+        dx := -origin.x + x_offset;
+        dy := -origin.y + y_offset;
+        w := rect.w - x_offset*2;
+        h := rect.h - y_offset*2;
+
+        top_left.x = x + dx*cos_r - dy*sin_r;
+        top_left.y = y + dx*sin_r + dy*cos_r;
+
+        top_right.x = x + (dx + w)*cos_r - dy*sin_r;
+        top_right.y = y + (dx + w)*sin_r + dy*cos_r;
+
+        bottom_left.x = x + dx*cos_r - (dy + h)*sin_r;
+        bottom_left.y = y + dx*sin_r + (dy + h)*cos_r;
+
+        bottom_right.x = x + (dx + w)*cos_r - (dy + h)*sin_r;
+        bottom_right.y = y + (dx + w)*sin_r + (dy + h)*cos_r;
+    }
 
     color_vec4 := Vector4.{
         x = color.r.(float32) / 255.0,
@@ -584,17 +691,17 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color) {
         w = color.a.(float32) / 255.0,
     };
 
-    array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    array_add(*renderer.line_vertices, .{ position = {x1, y0, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    array_add(*renderer.line_vertices, .{ position = {x1, y1, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    array_add(*renderer.line_vertices, .{ position = {x0, y1, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {x0, y0, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
 
     if renderer.line_vertices.count >= renderer.max_lines_per_batch * 2 {
         flush_lines(renderer);

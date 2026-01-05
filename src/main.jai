@@ -190,6 +190,8 @@ main :: () {
     time_init();
     set_target_fps(60);
 
+    angle := 0.0; // TODO(debug/test)
+
     exit := false;
     while !exit {
         dt = get_frame_time();
@@ -265,18 +267,22 @@ main :: () {
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst2);
 
         dst3 := sdl.F_Rect.{200, 200, 60, 60};
-        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst3);
+        origin := Vector2.{dst3.w / 2, dst3.h / 2};
+        angle += 50 * dt;
+        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst3, origin, rotation = angle * PI / 180.0);
 
         dst4 := sdl.F_Rect.{270, 270, 90, 90};
         render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
 
         rect := sdl.F_Rect.{400, 200, 100, 100};  // Moved to fit
         color := sdl.Color.{0, 255, 0, 255};
-        render_fill_rect(*renderer, *rect, *color);
+        fill_rect_origin := Vector2.{rect.w / 2, rect.h / 2};
+        render_fill_rect(*renderer, *rect, *color, fill_rect_origin, rotation = angle * PI / 180.0);
 
         line_rect := sdl.F_Rect.{450, 50, 150, 150};  // Moved to fit in 640x360
         line_color := sdl.Color.{0, 255, 0, 255};
-        render_rect(*renderer, *line_rect, *line_color);
+        rect_origin := Vector2.{line_rect.w / 2, line_rect.h / 2};
+        render_rect(*renderer, *line_rect, *line_color, rect_origin, rotation = angle * PI / 180.0);
 
         end_camera_mode(*renderer);
 

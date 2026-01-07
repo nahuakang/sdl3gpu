@@ -133,47 +133,54 @@ main :: () {
             return;
         }
 
-        begin_camera_mode(*renderer, *camera);
+        // Set camera for this entire frame (or null for screen space)
+        if use_camera {
+            set_camera(*renderer, *camera);
+        } else {
+            set_camera(*renderer, null);
+        }
 
-        // Draw bg
-        bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
-        render_texture(*renderer, bg_texture, *bg_src_rect, null);
-
-        large_line_rect := sdl.F_Rect.{50, 50, 300, 250};  // Scaled down, fits in viewport
-        large_line_color := sdl.Color.{0, 255, 0, 255};
-        render_rect(*renderer, *large_line_rect, *large_line_color);
-
-        // Draw multiple lettuces at different positions
-        lettuce_src_rect := sdl.F_Rect.{0, 0, cast(float)lettuce_texture.width, cast(float)lettuce_texture.height};
-
-        dst1 := sdl.F_Rect.{0, 0, 80, 80};
-        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst1);
-
-        dst2 := sdl.F_Rect.{90, 90, 100, 100};
-        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst2);
-
-        dst3 := sdl.F_Rect.{200, 200, 60, 60};
-        origin := Vector2.{dst3.w / 2, dst3.h / 2};
-        angle += 50 * dt;
-        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst3, origin, rotation = angle * PI / 180.0);
-
-        dst4 := sdl.F_Rect.{270, 270, 90, 90};
-        render_texture(*renderer, lettuce_texture, *lettuce_src_rect, *dst4);
-
-        rect := sdl.F_Rect.{400, 200, 100, 100};  // Moved to fit
-        color := sdl.Color.{0, 255, 0, 255};
-        fill_rect_origin := Vector2.{rect.w / 2, rect.h / 2};
-        render_fill_rect(*renderer, *rect, *color, fill_rect_origin, rotation = angle * PI / 180.0);
-
-        line_rect := sdl.F_Rect.{450, 50, 150, 150};  // Moved to fit in 640x360
-        line_color := sdl.Color.{0, 255, 0, 255};
-        rect_origin := Vector2.{line_rect.w / 2, line_rect.h / 2};
-        render_rect(*renderer, *line_rect, *line_color, rect_origin, rotation = angle * PI / 180.0);
-
-        end_camera_mode(*renderer);
+        drawing_stuff(*renderer, bg_texture, lettuce_texture, *angle, dt);
 
         end_frame(*renderer);
     }
 
     renderer_shutdown(*renderer);
+}
+
+drawing_stuff :: (renderer: *Renderer, bg_texture: *Texture, lettuce_texture: *Texture, angle: *float32, dt: float32) {
+    // Draw bg
+    bg_src_rect := sdl.F_Rect.{0, 0, cast(float)bg_texture.width, cast(float)bg_texture.height};
+    render_texture(renderer, bg_texture, *bg_src_rect, null);
+
+    large_line_rect := sdl.F_Rect.{50, 50, 300, 250};  // Scaled down, fits in viewport
+    large_line_color := sdl.Color.{0, 255, 0, 255};
+    render_rect(renderer, *large_line_rect, *large_line_color);
+
+    // Draw multiple lettuces at different positions
+    lettuce_src_rect := sdl.F_Rect.{0, 0, cast(float)lettuce_texture.width, cast(float)lettuce_texture.height};
+
+    dst1 := sdl.F_Rect.{0, 0, 80, 80};
+    render_texture(renderer, lettuce_texture, *lettuce_src_rect, *dst1);
+
+    dst2 := sdl.F_Rect.{90, 90, 100, 100};
+    render_texture(renderer, lettuce_texture, *lettuce_src_rect, *dst2);
+
+    dst3 := sdl.F_Rect.{200, 200, 60, 60};
+    origin := Vector2.{dst3.w / 2, dst3.h / 2};
+    angle.* += 50 * dt;
+    render_texture(renderer, lettuce_texture, *lettuce_src_rect, *dst3, origin, rotation = angle.* * PI / 180.0);
+
+    dst4 := sdl.F_Rect.{270, 270, 90, 90};
+    render_texture(renderer, lettuce_texture, *lettuce_src_rect, *dst4);
+
+    rect := sdl.F_Rect.{400, 200, 100, 100};  // Moved to fit
+    color := sdl.Color.{0, 255, 0, 255};
+    fill_rect_origin := Vector2.{rect.w / 2, rect.h / 2};
+    render_fill_rect(renderer, *rect, *color, fill_rect_origin, rotation = angle.* * PI / 180.0);
+
+    line_rect := sdl.F_Rect.{450, 50, 150, 150};  // Moved to fit in 640x360
+    line_color := sdl.Color.{0, 255, 0, 255};
+    rect_origin := Vector2.{line_rect.w / 2, line_rect.h / 2};
+    render_rect(renderer, *line_rect, *line_color, rect_origin, rotation = angle.* * PI / 180.0);
 }

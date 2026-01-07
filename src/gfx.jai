@@ -53,8 +53,15 @@ Texture :: struct {
 
 Draw_Call :: struct {
     texture: *Texture;
-    index_start: u32;
+    vertex_offset: u32;
+    vertex_count: u32;
+    index_offset: u32;
     index_count: u32;
+}
+
+Line_Draw_Call :: struct {
+    vertex_offset: u32;
+    vertex_count: u32;
 }
 
 Renderer :: struct {
@@ -83,16 +90,16 @@ Renderer :: struct {
     line_vertex_buffer: *sdl.GPU_Buffer;
     line_transfer_buffer: *sdl.GPU_Transfer_Buffer;
 
-    /* Triangle batch data */
-    batch_vertices: [..]Vertex_Data;
-    batch_indices: [..]u16;
-    batch_draws: [..]Draw_Call;
+    /* Frame-wide accumulation (no mid-frame flushing) */
+    frame_quad_vertices: [..]Vertex_Data;
+    frame_quad_indices: [..]u16;
+    frame_draws: [..]Draw_Call;
+    frame_line_vertices: [..]Vertex_Data;
+    frame_line_draws: [..]Line_Draw_Call;
 
-    /* Line batch data */
-    line_vertices: [..]Vertex_Data;
-
-    max_sprites_per_batch: int;
-    max_lines_per_batch: int;
+    max_vertices: int;
+    max_indices: int;
+    max_line_vertices: int;
 
     projection: Matrix4;
 }
@@ -172,22 +179,23 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
     }
 
     renderer.sampler = create_sampler(renderer.device);
-    renderer.max_sprites_per_batch = 1000;
-    renderer.max_lines_per_batch = 1000;
+    renderer.max_vertices = 4000;     // 1000 quads * 4 vertices
+    renderer.max_indices = 6000;      // 1000 quads * 6 indices
+    renderer.max_line_vertices = 2000; // 1000 lines * 2 vertices
 
     // Create buffers
-    renderer.quad_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4), "Vertex Buffer");
-    renderer.quad_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_sprites_per_batch * 6), "Index Buffer");
-    renderer.line_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2), "Line Vertex Buffer");
+    renderer.quad_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_vertices), "Vertex Buffer");
+    renderer.quad_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_indices), "Index Buffer");
+    renderer.line_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_line_vertices), "Line Vertex Buffer");
 
     quad_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     quad_transfer_buffer_info.usage = .UPLOAD;
-    quad_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_sprites_per_batch * 4 + size_of(u16) * renderer.max_sprites_per_batch * 6);
+    quad_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_vertices + size_of(u16) * renderer.max_indices);
     renderer.quad_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *quad_transfer_buffer_info);
 
     line_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     line_transfer_buffer_info.usage = .UPLOAD;
-    line_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_lines_per_batch * 2);
+    line_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_line_vertices);
     renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
 
     // Setup projection
@@ -403,15 +411,27 @@ end_frame :: (renderer: *Renderer) {
 }
 
 // Begin camera mode - call this before drawing with camera
-begin_camera_mode :: (renderer: *Renderer, camera: *Camera_2D) {
-    flush(renderer); // Flush any pending screen-space draws
+// begin_camera_mode :: (renderer: *Renderer, camera: *Camera_2D) {
+//     flush(renderer); // Flush any pending screen-space draws
+//     renderer.camera = camera;
+// }
+
+// End camera mode - call this to go back to screen coordinates
+// end_camera_mode :: (renderer: *Renderer) {
+//     flush(renderer); // Flush any pending camera-space draws
+//     renderer.camera = null;
+// }
+
+set_camera :: (renderer: *Renderer, camera: *Camera_2D) {
     renderer.camera = camera;
 }
 
-// End camera mode - call this to go back to screen coordinates
-end_camera_mode :: (renderer: *Renderer) {
-    flush(renderer); // Flush any pending camera-space draws
-    renderer.camera = null;
+get_mvp :: (renderer: *Renderer) -> Matrix4 {
+    if renderer.camera != null {
+        view := get_view_matrix(renderer.camera);
+        return view * renderer.projection;
+    }
+    return renderer.projection;
 }
 
 // Calculate and set renderer viewport for letterbox or pillarbox display
@@ -437,20 +457,20 @@ set_viewport :: (renderer: *Renderer, window_width: s32, window_height: s32) {
     renderer.viewport.max_depth = 1.0;
 }
 
-flush_triangles :: (renderer: *Renderer) {
-    if renderer.batch_vertices.count == 0 return;
+flush_quads :: (renderer: *Renderer) {
+    if renderer.frame_quad_vertices.count == 0 return;
 
     // End current render pass
     sdl.end_gpu_render_pass(renderer.current_render_pass);
 
     // Upload data via copy pass
     transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.quad_transfer_buffer, false);
-    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.batch_vertices.count);
-    index_size := cast(u32)(size_of(u16) * renderer.batch_indices.count);
+    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.frame_quad_vertices.count);
+    index_size := cast(u32)(size_of(u16) * renderer.frame_quad_indices.count);
     index_ptr := cast(*u8)transfer_data + vertex_size;
 
-    memcpy(transfer_data, renderer.batch_vertices.data, vertex_size);
-    memcpy(index_ptr, renderer.batch_indices.data, index_size);
+    memcpy(transfer_data, renderer.frame_quad_vertices.data, vertex_size);
+    memcpy(index_ptr, renderer.frame_quad_indices.data, index_size);
     sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.quad_transfer_buffer);
 
     copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
@@ -492,32 +512,31 @@ flush_triangles :: (renderer: *Renderer) {
     } else {
         mvp = renderer.projection;
     }
-
     ubo := UBO.{ mvp = mvp };
     sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.quad_pipeline);
     sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
     sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
     sdl.bind_gpu_index_buffer(renderer.current_render_pass, *index_binding, .SIZE_16BIT);
 
-    for renderer.batch_draws {
+    for renderer.frame_draws {
         texture_binding: sdl.GPU_Texture_Sampler_Binding = .{texture = it.texture.gpu_texture, sampler = renderer.sampler};
         sdl.bind_gpu_fragment_samplers(renderer.current_render_pass, 0, *texture_binding, 1);
-        sdl.draw_gpu_indexed_primitives(renderer.current_render_pass, it.index_count, 1, it.index_start, 0, 0);
+        sdl.draw_gpu_indexed_primitives(renderer.current_render_pass, it.index_count, 1, it.index_offset, cast(s32)it.vertex_offset, 0);
     }
 
-    array_reset(*renderer.batch_vertices);
-    array_reset(*renderer.batch_indices);
-    array_reset(*renderer.batch_draws);
+    array_reset(*renderer.frame_quad_vertices);
+    array_reset(*renderer.frame_quad_indices);
+    array_reset(*renderer.frame_draws);
 }
 
 flush_lines :: (renderer: *Renderer) {
-    if renderer.line_vertices.count == 0 return;
+    if renderer.frame_line_vertices.count == 0 return;
 
     sdl.end_gpu_render_pass(renderer.current_render_pass);
 
-    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.line_vertices.count);
+    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.frame_line_vertices.count);
     transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer, false);
-    memcpy(transfer_data, renderer.line_vertices.data, vertex_size);
+    memcpy(transfer_data, renderer.frame_line_vertices.data, vertex_size);
     sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);
 
     copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
@@ -548,7 +567,6 @@ flush_lines :: (renderer: *Renderer) {
     } else {
         mvp = renderer.projection;
     }
-
     ubo := UBO.{ mvp = mvp };
     sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.line_pipeline);
     sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
@@ -556,13 +574,17 @@ flush_lines :: (renderer: *Renderer) {
 
     white_texture_binding: sdl.GPU_Texture_Sampler_Binding = .{texture = renderer.white_texture.gpu_texture, sampler = renderer.sampler};
     sdl.bind_gpu_fragment_samplers(renderer.current_render_pass, 0, *white_texture_binding, 1);
-    sdl.draw_gpu_primitives(renderer.current_render_pass, cast(u32)renderer.line_vertices.count, 1, 0, 0);
 
-    array_reset(*renderer.line_vertices);
+    for renderer.frame_line_draws {
+        sdl.draw_gpu_primitives(renderer.current_render_pass, it.vertex_count, 1, it.vertex_offset, 0);
+    }
+
+    array_reset(*renderer.frame_line_vertices);
+    array_reset(*renderer.frame_line_draws);
 }
 
 flush :: (renderer: *Renderer) {
-    flush_triangles(renderer);
+    flush_quads(renderer);
     flush_lines(renderer);
 }
 
@@ -682,28 +704,33 @@ render_texture :: (renderer: *Renderer, texture: *Texture, src: *sdl.F_Rect, dst
     v0 := (src_rect.y + src_rect.h) / cast(float)texture.height; // NOTE(nahua): Texture sampling - v0 and v1 flipped to draw UV upside down since (0, 0) is upper left corner
     v1 := src_rect.y / cast(float)texture.height;                // NOTE(nahua): Texture sampling - v0 and v1 flipped to draw UV upside down since (0, 0) is upper left corner
 
-    base_vertex := cast(u16)renderer.batch_vertices.count;
-    array_add(*renderer.batch_vertices, .{ position = {top_left.x, top_left.y, 0}, color = {1, 1, 1, 1}, uv = {u0, v1}});
-    array_add(*renderer.batch_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = {1, 1, 1, 1}, uv = {u0, v0}});
-    array_add(*renderer.batch_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = {1, 1, 1, 1}, uv = {u1, v0}});
-    array_add(*renderer.batch_vertices, .{ position = {top_right.x, top_right.y, 0}, color = {1, 1, 1, 1}, uv = {u1, v1}});
+    vertex_offset := cast(u32)renderer.frame_quad_vertices.count;
+    index_offset := cast(u32)renderer.frame_quad_indices.count;
 
-    index_start := cast(u32)renderer.batch_indices.count;
-    array_add(*renderer.batch_indices, base_vertex + 0);
-    array_add(*renderer.batch_indices, base_vertex + 1);
-    array_add(*renderer.batch_indices, base_vertex + 2);
-    array_add(*renderer.batch_indices, base_vertex + 0);
-    array_add(*renderer.batch_indices, base_vertex + 2);
-    array_add(*renderer.batch_indices, base_vertex + 3);
+    array_add(*renderer.frame_quad_vertices, .{ position = {top_left.x, top_left.y, 0}, color = {1, 1, 1, 1}, uv = {u0, v1}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = {1, 1, 1, 1}, uv = {u0, v0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = {1, 1, 1, 1}, uv = {u1, v0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {top_right.x, top_right.y, 0}, color = {1, 1, 1, 1}, uv = {u1, v1}});
+
+    // Use local indices 0-3, vertex_offset will be applied during draw
+    array_add(*renderer.frame_quad_indices, 0);
+    array_add(*renderer.frame_quad_indices, 1);
+    array_add(*renderer.frame_quad_indices, 2);
+    array_add(*renderer.frame_quad_indices, 0);
+    array_add(*renderer.frame_quad_indices, 2);
+    array_add(*renderer.frame_quad_indices, 3);
 
     draw_call: Draw_Call;
     draw_call.texture = texture;
-    draw_call.index_start = index_start;
+    draw_call.vertex_offset = vertex_offset;
+    draw_call.vertex_count = 4;
+    draw_call.index_offset = index_offset;
     draw_call.index_count = 6;
-    array_add(*renderer.batch_draws, draw_call);
+    array_add(*renderer.frame_draws, draw_call);
 
-    if renderer.batch_vertices.count >= renderer.max_sprites_per_batch * 4 {
-        flush_triangles(renderer);
+    // Only flush if necessary
+    if renderer.frame_quad_vertices.count >= renderer.max_vertices {
+        flush_quads(renderer);
     }
 }
 
@@ -748,7 +775,8 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, 
         bottom_right.y = y + (dx + rect.w)*sin_r + (dy + rect.h)*cos_r;
     }
 
-    base_vertex := cast(u16)renderer.batch_vertices.count;
+    vertex_offset := cast(u32)renderer.frame_quad_vertices.count;
+    index_offset := cast(u32)renderer.frame_quad_indices.count;
 
     color_vec4 := Vector4.{
         x = color.r.(float32) / 255.0,
@@ -757,27 +785,30 @@ render_fill_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, 
         w = color.a.(float32) / 255.0,
     };
 
-    array_add(*renderer.batch_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.batch_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.batch_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.batch_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    index_start := cast(u32)renderer.batch_indices.count;
-    array_add(*renderer.batch_indices, base_vertex + 0);
-    array_add(*renderer.batch_indices, base_vertex + 1);
-    array_add(*renderer.batch_indices, base_vertex + 2);
-    array_add(*renderer.batch_indices, base_vertex + 0);
-    array_add(*renderer.batch_indices, base_vertex + 2);
-    array_add(*renderer.batch_indices, base_vertex + 3);
+    // Use local indices 0-3, vertex_offset will be applied during draw
+    array_add(*renderer.frame_quad_indices, 0);
+    array_add(*renderer.frame_quad_indices, 1);
+    array_add(*renderer.frame_quad_indices, 2);
+    array_add(*renderer.frame_quad_indices, 0);
+    array_add(*renderer.frame_quad_indices, 2);
+    array_add(*renderer.frame_quad_indices, 3);
 
     draw_call: Draw_Call;
     draw_call.texture = renderer.white_texture;
-    draw_call.index_start = index_start;
+    draw_call.vertex_offset = vertex_offset;
+    draw_call.vertex_count = 4;
+    draw_call.index_offset = index_offset;
     draw_call.index_count = 6;
-    array_add(*renderer.batch_draws, draw_call);
+    array_add(*renderer.frame_draws, draw_call);
 
-    if renderer.batch_vertices.count >= renderer.max_sprites_per_batch * 4 {
-        flush_triangles(renderer);
+    // Only flush if necessary
+    if renderer.frame_quad_vertices.count >= renderer.max_vertices {
+        flush_quads(renderer);
     }
 }
 
@@ -832,19 +863,27 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origi
         w = color.a.(float32) / 255.0,
     };
 
-    array_add(*renderer.line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    vertex_offset := cast(u32)renderer.frame_line_vertices.count;
 
-    array_add(*renderer.line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    array_add(*renderer.line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    array_add(*renderer.line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    if renderer.line_vertices.count >= renderer.max_lines_per_batch * 2 {
+    array_add(*renderer.frame_line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+
+    line_draw: Line_Draw_Call;
+    line_draw.vertex_offset = vertex_offset;
+    line_draw.vertex_count = 8;
+    array_add(*renderer.frame_line_draws, line_draw);
+
+    // Only flush if necessary
+    if renderer.frame_line_vertices.count >= renderer.max_line_vertices {
         flush_lines(renderer);
     }
 }

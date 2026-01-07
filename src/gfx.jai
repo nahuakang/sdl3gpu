@@ -410,18 +410,6 @@ end_frame :: (renderer: *Renderer) {
     time_end_frame();
 }
 
-// Begin camera mode - call this before drawing with camera
-// begin_camera_mode :: (renderer: *Renderer, camera: *Camera_2D) {
-//     flush(renderer); // Flush any pending screen-space draws
-//     renderer.camera = camera;
-// }
-
-// End camera mode - call this to go back to screen coordinates
-// end_camera_mode :: (renderer: *Renderer) {
-//     flush(renderer); // Flush any pending camera-space draws
-//     renderer.camera = null;
-// }
-
 set_camera :: (renderer: *Renderer, camera: *Camera_2D) {
     renderer.camera = camera;
 }

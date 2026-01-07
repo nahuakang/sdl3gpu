@@ -16,9 +16,3 @@
     #library,system,link_always "libdl";
     #library,system,link_always "libm";
 }
-
-main :: () {}
-
-// Local Variables:
-// compile-command: "jai module.jai"
-// End:

@@ -12,7 +12,8 @@ TODO
 - [ ] Set target FPS
 - [x] Implement render_rect
 - [x] Implement render_fill_rect
-- [ ] Implement basic text rendering
+- [x] Implement basic text rendering
+- [ ] Figure out how to handle text rendering in screen space vs UI vs quad rendering in game viewport space
 - [ ] Implement scissor
 - [ ] Implement DrawLineEX (using triangles/quads with thickness)
 - [ ] Implement DrawLineBezier
@@ -34,6 +35,7 @@ TODO
 #import "String";
 sdl :: #import "SDL3";
 img :: #import "SDL3/image";
+ttf :: #import "SDL3/ttf";
 
 #load "asset.jai";
 #load "gfx.jai";
@@ -73,10 +75,33 @@ main :: () {
         return;
     }
 
+    font_small = ttf.open_font("assets/fonts/smallburg-regular.ttf", 48.0);
+    if !font_small {
+        log_error("Failed to load font: %\n", to_string(sdl.get_error()));
+        return;
+    }
+    font_large = ttf.open_font("assets/fonts/smallburg-regular.ttf", 96.0);
+    if !font_large {
+        log_error("Failed to load font: %\n", to_string(sdl.get_error()));
+        return;
+    }
+
+    text_small := ttf.create_text(renderer.text_engine, font_small, "Hello, SDL3!", 0);
+    if !text_small {
+        log_error("Failed to create text: %\n", to_string(sdl.get_error()));
+        return;
+    }
+    text_large := ttf.create_text(renderer.text_engine, font_large, "Hello, SDL3!", 0);
+    if !text_large {
+        log_error("Failed to create text: %\n", to_string(sdl.get_error()));
+        return;
+    }
+
+
     time_init();
     set_target_fps(60);
 
-    angle := 0.0; // TODO(debug/test)
+    angle := 0.0; // @TODO: debug/test
 
     exit := false;
     while !exit {
@@ -141,11 +166,20 @@ main :: () {
         }
 
         drawing_stuff(*renderer, bg_texture, lettuce_texture, *angle, dt);
+        draw_text(*renderer, text_small, text_large);
 
         end_frame(*renderer);
     }
 
     renderer_shutdown(*renderer);
+
+    // @TODO: Move this somewhere else
+    ttf.destroy_text(text_small);
+    ttf.destroy_text(text_large);
+    ttf.close_font(font_small);
+    ttf.close_font(font_large);
+    ttf.destroy_gpu_text_engine(renderer.text_engine);
+    ttf.quit();
 }
 
 drawing_stuff :: (renderer: *Renderer, bg_texture: *Texture, lettuce_texture: *Texture, angle: *float32, dt: float32) {
@@ -183,4 +217,16 @@ drawing_stuff :: (renderer: *Renderer, bg_texture: *Texture, lettuce_texture: *T
     line_color := sdl.Color.{0, 255, 0, 255};
     rect_origin := Vector2.{line_rect.w / 2, line_rect.h / 2};
     render_rect(renderer, *line_rect, *line_color, rect_origin, rotation = angle.* * PI / 180.0);
+}
+
+draw_text :: (renderer: *Renderer, text1: *ttf.Text, text2: *ttf.Text) {
+    text_color := Vector4.{1, 1, 0, 1};
+
+    text_position := Vector2.{0, 0};
+    text_sequence := ttf.get_gpu_text_draw_data(text1);
+    queue_text(renderer, text_sequence, text_position, text_color);
+
+    text_position2 := Vector2.{50, 50};
+    text_sequence2 := ttf.get_gpu_text_draw_data(text2);
+    queue_text(renderer, text_sequence2, text_position2, text_color);
 }

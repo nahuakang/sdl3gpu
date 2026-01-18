@@ -5,7 +5,7 @@
 			"path": "."
 		},
 		{
-			"path": "C:\\Users\\kangn\\jai",
+			"path": "~/jai",
 			"folder_exclude_patterns": ["bin"],
 			"binary_file_patterns": ["*.bin", "jai-*", "lld-*"],
 		}

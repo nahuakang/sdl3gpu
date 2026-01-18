@@ -81,7 +81,12 @@ Renderer :: struct {
 
     quad_pipeline: *sdl.GPU_Graphics_Pipeline;
     line_pipeline: *sdl.GPU_Graphics_Pipeline;
+    text_pipeline: *sdl.GPU_Graphics_Pipeline;
+    text_engine: *ttf.Text_Engine;
+    current_font: *ttf.Font;
+
     sampler: *sdl.GPU_Sampler;
+    linear_sampler: *sdl.GPU_Sampler;
 
     quad_vertex_buffer: *sdl.GPU_Buffer;
     quad_index_buffer: *sdl.GPU_Buffer;
@@ -90,12 +95,21 @@ Renderer :: struct {
     line_vertex_buffer: *sdl.GPU_Buffer;
     line_transfer_buffer: *sdl.GPU_Transfer_Buffer;
 
-    /* Frame-wide accumulation (no mid-frame flushing) */
+    text_vertex_buffer: *sdl.GPU_Buffer;
+    text_index_buffer: *sdl.GPU_Buffer;
+    text_transfer_buffer: *sdl.GPU_Transfer_Buffer;
+
+    /* Frame-wide quad accumulation */
     frame_quad_vertices: [..]Vertex_Data;
     frame_quad_indices: [..]u16;
     frame_draws: [..]Draw_Call;
+    /* Frame-wide line accumulation */
     frame_line_vertices: [..]Vertex_Data;
     frame_line_draws: [..]Line_Draw_Call;
+    /* Frame-wide text accumulation */
+    frame_text_sequences: [..] *ttf.GPU_Atlas_Draw_Sequence;
+    frame_text_vertices: [..]Vertex_Data;
+    frame_text_indices: [..]u32;
 
     max_vertices: int;
     max_indices: int;
@@ -133,6 +147,17 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
         return renderer, false;
     }
 
+    if !ttf.init() {
+        log_error("Failed to initialize SDL_ttf: %\n", to_string(sdl.get_error()));
+        return renderer, false;
+    }
+
+    renderer.text_engine = ttf.create_gpu_text_engine(renderer.device);
+    if !renderer.text_engine {
+        log_error("Failed to create GPU text engine: %\n", to_string(sdl.get_error()));
+        return renderer, false;
+    }
+
     // Load shaders
     vertex_shader := load_shader(renderer.device, "assets/shaders/basic2d.vert", 0, 1, 0, 0);
     if !vertex_shader {
@@ -147,6 +172,20 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
         return renderer, false;
     }
     defer sdl.release_gpu_shader(renderer.device, fragment_shader);
+
+    text_vertex_shader := load_shader(renderer.device, "assets/shaders/text.vert", 0, 1, 0, 0);
+    if !text_vertex_shader {
+        log_error("Failed to create text vertex shader\n");
+        return renderer, false;
+    }
+    defer sdl.release_gpu_shader(renderer.device, text_vertex_shader);
+
+    text_fragment_shader := load_shader(renderer.device, "assets/shaders/text.frag", 1, 0, 0, 0);
+    if !text_fragment_shader {
+        log_error("Failed to create text fragment shader\n");
+        return renderer, false;
+    }
+    defer sdl.release_gpu_shader(renderer.device, text_fragment_shader);
 
     // Setup vertex input
     vertex_buffer_desc: sdl.GPU_Vertex_Buffer_Description;
@@ -178,7 +217,15 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
         return renderer, false;
     }
 
+    renderer.text_pipeline = create_pipeline(renderer.device, renderer.window, text_vertex_shader, text_fragment_shader, vertex_input_state, .TRIANGLELIST, enable_blend=true);
+    if !renderer.text_pipeline {
+        log_error("Failed to create text pipeline\n");
+        return renderer, false;
+    }
+
     renderer.sampler = create_sampler(renderer.device);
+    renderer.linear_sampler = create_sampler(renderer.device, min_filter=.LINEAR, mag_filter=.LINEAR);
+
     renderer.max_vertices = 4000;     // 1000 quads * 4 vertices
     renderer.max_indices = 6000;      // 1000 quads * 6 indices
     renderer.max_line_vertices = 2000; // 1000 lines * 2 vertices
@@ -187,6 +234,8 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
     renderer.quad_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_vertices), "Vertex Buffer");
     renderer.quad_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_indices), "Index Buffer");
     renderer.line_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_line_vertices), "Line Vertex Buffer");
+    renderer.text_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_vertices), "Vertex Buffer");
+    renderer.text_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u32) * renderer.max_indices), "Index Buffer"); // @NOTE: Use u32 instead of u16 for text
 
     quad_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     quad_transfer_buffer_info.usage = .UPLOAD;
@@ -197,6 +246,11 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
     line_transfer_buffer_info.usage = .UPLOAD;
     line_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_line_vertices);
     renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
+
+    text_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
+    text_transfer_buffer_info.usage = .UPLOAD;
+    text_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_vertices + size_of(u32) * renderer.max_indices);
+    renderer.text_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *text_transfer_buffer_info);
 
     // Setup projection
     drawable_width, drawable_height: s32;
@@ -240,7 +294,9 @@ renderer_shutdown :: (renderer: *Renderer) {
     sdl.release_gpu_buffer(renderer.device, renderer.line_vertex_buffer);
     sdl.release_gpu_graphics_pipeline(renderer.device, renderer.quad_pipeline);
     sdl.release_gpu_graphics_pipeline(renderer.device, renderer.line_pipeline);
+    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.text_pipeline);
     sdl.release_gpu_sampler(renderer.device, renderer.sampler);
+    sdl.release_gpu_sampler(renderer.device, renderer.linear_sampler);
     sdl.destroy_gpu_device(renderer.device);
     sdl.destroy_window(renderer.window);
     sdl.quit();
@@ -571,9 +627,85 @@ flush_lines :: (renderer: *Renderer) {
     array_reset(*renderer.frame_line_draws);
 }
 
+flush_text :: (renderer: *Renderer) {
+    if renderer.frame_text_vertices.count == 0 return;
+
+    sdl.end_gpu_render_pass(renderer.current_render_pass);
+
+    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.frame_text_vertices.count);
+    index_size := cast(u32)(size_of(u32) * renderer.frame_text_indices.count);
+
+    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.text_transfer_buffer, false);
+    memcpy(transfer_data, renderer.frame_text_vertices.data, vertex_size);
+    memcpy(cast(*u8)transfer_data + vertex_size, renderer.frame_text_indices.data, index_size);
+    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.text_transfer_buffer);
+
+    copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
+
+    vertex_location: sdl.GPU_Transfer_Buffer_Location;
+    vertex_location.transfer_buffer = renderer.text_transfer_buffer;
+    vertex_region: sdl.GPU_Buffer_Region;
+    vertex_region.buffer = renderer.text_vertex_buffer;
+    vertex_region.size = vertex_size;
+    sdl.upload_to_gpu_buffer(copy_pass, *vertex_location, *vertex_region, false);
+
+    index_location: sdl.GPU_Transfer_Buffer_Location;
+    index_location.transfer_buffer = renderer.text_transfer_buffer;
+    index_location.offset = vertex_size;
+    index_region: sdl.GPU_Buffer_Region;
+    index_region.buffer = renderer.text_index_buffer;
+    index_region.size = index_size;
+    sdl.upload_to_gpu_buffer(copy_pass, *index_location, *index_region, false);
+
+    sdl.end_gpu_copy_pass(copy_pass);
+
+    color_target: sdl.GPU_Color_Target_Info;
+    color_target.texture = renderer.swapchain_texture;
+    color_target.load_op = .LOAD;
+    color_target.store_op = .STORE;
+    renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
+
+    vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.text_vertex_buffer};
+    index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.text_index_buffer};
+
+    // @NOTE: Use screen-space projection instead of gameplay's projection; also ignore viewport
+    drawable_width, drawable_height: s32;
+    sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
+    screen_projection := orthographic_projection_matrix(
+        left = 0,
+        right = drawable_width.(float),
+        bottom = drawable_height.(float),
+        top = 0,
+        near = 0,
+        far = 1,
+    );
+    ubo := UBO.{ mvp = screen_projection };
+    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.text_pipeline);
+    sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
+    sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
+    sdl.bind_gpu_index_buffer(renderer.current_render_pass, *index_binding, .SIZE_32BIT);
+
+    index_offset: u32 = 0;
+    for renderer.frame_text_sequences {
+        texture_binding: sdl.GPU_Texture_Sampler_Binding = .{
+            texture = it.atlas_texture,
+            sampler = renderer.linear_sampler
+        };
+        sdl.bind_gpu_fragment_samplers(renderer.current_render_pass, 0, *texture_binding, 1);
+        sdl.draw_gpu_indexed_primitives(renderer.current_render_pass, xx it.num_indices, 1, index_offset, 0, 0);
+
+        index_offset += xx it.num_indices;
+    }
+
+    array_reset(*renderer.frame_text_vertices);
+    array_reset(*renderer.frame_text_indices);
+    array_reset(*renderer.frame_text_sequences);
+}
+
 flush :: (renderer: *Renderer) {
     flush_quads(renderer);
     flush_lines(renderer);
+    flush_text(renderer);
 }
 
 /* Textures */
@@ -873,5 +1005,30 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origi
     // Only flush if necessary
     if renderer.frame_line_vertices.count >= renderer.max_line_vertices {
         flush_lines(renderer);
+    }
+}
+
+/* Text */
+queue_text :: (renderer: *Renderer, sequence: *ttf.GPU_Atlas_Draw_Sequence, position: Vector2, color: Vector4) {
+    while sequence {
+        array_add(*renderer.frame_text_sequences, sequence);
+
+        base_vertex := cast(u32)renderer.frame_text_vertices.count;
+
+        for i: 0..sequence.num_vertices-1 {
+            vertex: Vertex_Data;
+            // @NOTE: SDL3_ttf's glyph coordinates assume Y increases upward but our projection matrix is the opposite
+            // @NOTE: so negate the Y offset when calculating position
+            vertex.position = {position.x + sequence.xy[i].x, position.y - sequence.xy[i].y, 0};
+            vertex.color = color;
+            vertex.uv = .{sequence.uv[i].x, sequence.uv[i].y};
+            array_add(*renderer.frame_text_vertices, vertex);
+        }
+
+        for i: 0..sequence.num_indices-1 {
+            array_add(*renderer.frame_text_indices, cast(u32)sequence.indices[i] + base_vertex);
+        }
+
+        sequence = sequence.next;
     }
 }

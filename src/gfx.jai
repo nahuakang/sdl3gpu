@@ -668,18 +668,34 @@ flush_text :: (renderer: *Renderer) {
     vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.text_vertex_buffer};
     index_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.text_index_buffer};
 
-    // @NOTE: Use screen-space projection instead of gameplay's projection; also ignore viewport
+    // @NOTE: Use viewport-aware projection instead of full screen space
+    // @NOTE: We shift the coordinate system so text is rendered in and not out of the letterbox/pillarbox
     drawable_width, drawable_height: s32;
     sdl.get_window_size_in_pixels(renderer.window, *drawable_width, *drawable_height);
-    screen_projection := orthographic_projection_matrix(
-        left = 0,
-        right = drawable_width.(float),
-        bottom = drawable_height.(float),
-        top = 0,
-        near = 0,
-        far = 1,
-    );
-    ubo := UBO.{ mvp = screen_projection };
+
+    screen_space_projection: Matrix4;
+    if renderer.use_viewport {
+        screen_space_projection = orthographic_projection_matrix(
+            left = -renderer.viewport.x,
+            right = drawable_width.(float) - renderer.viewport.x,
+            bottom = drawable_height.(float) - renderer.viewport.y,
+            top = -renderer.viewport.y,
+            near = 0,
+            far = 1,
+        );
+    } else {
+        screen_space_projection = orthographic_projection_matrix(
+            left = 0,
+            right = drawable_width.(float),
+            bottom = drawable_height.(float),
+            top = 0,
+            near = 0,
+            far = 1,
+        );
+    }
+
+    ubo := UBO.{ mvp = screen_space_projection };
+
     sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.text_pipeline);
     sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
     sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);

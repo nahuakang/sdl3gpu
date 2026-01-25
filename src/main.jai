@@ -1,34 +1,3 @@
-/*
-TODO
-
-- [x] What do we do with the renderer fields if we want to draw text or UI in the future where draw call sequences matter?
-- [x] Review the entire flow for draw triangles again
-- [ ] Figure out why the lettuce have white background
-- [ ] How to keep aspect ratio when window is resized
-- [x] How to do a 2D camera with pan/zoom (WASD + mouse wheel)
-- [ ] Proper window resize handling
-- [ ] How to display a large background (but not a tilemap)
-- [ ] How to render to texture with a fixed internal resolution (for pixel art)
-- [ ] Set target FPS
-- [x] Implement render_rect
-- [x] Implement render_fill_rect
-- [x] Implement basic text rendering
-- [ ] Figure out how to handle text rendering in screen space vs UI vs quad rendering in game viewport space
-- [ ] Implement scissor
-- [ ] Implement DrawLineEX (using triangles/quads with thickness)
-- [ ] Implement DrawLineBezier
-- [ ] Implement DrawCircle (filled)
-- [ ] Implement DrawCircleLines (circle outline)
-- [ ] Implement DrawCircleLinesV(circle vector)
-- [ ] Implement DrawEllipse
-- [ ] Implement DrawEllipseLines
-- [ ] Implement DrawPolyLines / DrawPolyLinesEx
-- [ ] Implement DrawRectangleRounded / DrawRectangleRoundedLines / DrawRectangleRoundedLinesEx
-- [ ] Implement basic physics and shape collisions
-- [ ] Implement framerate and fixed timesteps
-
-*/
-
 #import "Basic";
 #import "File";
 #import "Math";

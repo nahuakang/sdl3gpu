@@ -59,11 +59,6 @@ Draw_Call :: struct {
     index_count: u32;
 }
 
-Line_Draw_Call :: struct {
-    vertex_offset: u32;
-    vertex_count: u32;
-}
-
 Renderer :: struct {
     device: *sdl.GPU_Device;
     window: *sdl.Window;
@@ -80,7 +75,6 @@ Renderer :: struct {
     white_texture: *Texture;
 
     quad_pipeline: *sdl.GPU_Graphics_Pipeline;
-    line_pipeline: *sdl.GPU_Graphics_Pipeline;
     text_pipeline: *sdl.GPU_Graphics_Pipeline;
     text_engine: *ttf.Text_Engine;
     current_font: *ttf.Font;
@@ -92,9 +86,6 @@ Renderer :: struct {
     quad_index_buffer: *sdl.GPU_Buffer;
     quad_transfer_buffer: *sdl.GPU_Transfer_Buffer;
 
-    line_vertex_buffer: *sdl.GPU_Buffer;
-    line_transfer_buffer: *sdl.GPU_Transfer_Buffer;
-
     text_vertex_buffer: *sdl.GPU_Buffer;
     text_index_buffer: *sdl.GPU_Buffer;
     text_transfer_buffer: *sdl.GPU_Transfer_Buffer;
@@ -103,9 +94,7 @@ Renderer :: struct {
     frame_quad_vertices: [..]Vertex_Data;
     frame_quad_indices: [..]u16;
     frame_draws: [..]Draw_Call;
-    /* Frame-wide line accumulation */
-    frame_line_vertices: [..]Vertex_Data;
-    frame_line_draws: [..]Line_Draw_Call;
+
     /* Frame-wide text accumulation */
     frame_text_sequences: [..] *ttf.GPU_Atlas_Draw_Sequence;
     frame_text_vertices: [..]Vertex_Data;
@@ -211,12 +200,6 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
         return renderer, false;
     }
 
-    renderer.line_pipeline = create_pipeline(renderer.device, renderer.window, vertex_shader, fragment_shader, vertex_input_state, .LINELIST);
-    if !renderer.line_pipeline {
-        log_error("Failed to create line pipeline\n");
-        return renderer, false;
-    }
-
     renderer.text_pipeline = create_pipeline(renderer.device, renderer.window, text_vertex_shader, text_fragment_shader, vertex_input_state, .TRIANGLELIST, enable_blend=true);
     if !renderer.text_pipeline {
         log_error("Failed to create text pipeline\n");
@@ -233,7 +216,6 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
     // Create buffers
     renderer.quad_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_vertices), "Vertex Buffer");
     renderer.quad_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u16) * renderer.max_indices), "Index Buffer");
-    renderer.line_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_line_vertices), "Line Vertex Buffer");
     renderer.text_vertex_buffer = create_gpu_buffer(renderer.device, .VERTEX, cast(u32)(size_of(Vertex_Data) * renderer.max_vertices), "Vertex Buffer");
     renderer.text_index_buffer = create_gpu_buffer(renderer.device, .INDEX, cast(u32)(size_of(u32) * renderer.max_indices), "Index Buffer"); // @NOTE: Use u32 instead of u16 for text
 
@@ -241,11 +223,6 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
     quad_transfer_buffer_info.usage = .UPLOAD;
     quad_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_vertices + size_of(u16) * renderer.max_indices);
     renderer.quad_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *quad_transfer_buffer_info);
-
-    line_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
-    line_transfer_buffer_info.usage = .UPLOAD;
-    line_transfer_buffer_info.size = cast(u32)(size_of(Vertex_Data) * renderer.max_line_vertices);
-    renderer.line_transfer_buffer = sdl.create_gpu_transfer_buffer(renderer.device, *line_transfer_buffer_info);
 
     text_transfer_buffer_info: sdl.GPU_Transfer_Buffer_Create_Info;
     text_transfer_buffer_info.usage = .UPLOAD;
@@ -288,12 +265,9 @@ renderer_init :: (width: s32, height: s32, title: string, use_viewport := true) 
 
 renderer_shutdown :: (renderer: *Renderer) {
     sdl.release_gpu_transfer_buffer(renderer.device, renderer.quad_transfer_buffer);
-    sdl.release_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);
     sdl.release_gpu_buffer(renderer.device, renderer.quad_vertex_buffer);
     sdl.release_gpu_buffer(renderer.device, renderer.quad_index_buffer);
-    sdl.release_gpu_buffer(renderer.device, renderer.line_vertex_buffer);
     sdl.release_gpu_graphics_pipeline(renderer.device, renderer.quad_pipeline);
-    sdl.release_gpu_graphics_pipeline(renderer.device, renderer.line_pipeline);
     sdl.release_gpu_graphics_pipeline(renderer.device, renderer.text_pipeline);
     sdl.release_gpu_sampler(renderer.device, renderer.sampler);
     sdl.release_gpu_sampler(renderer.device, renderer.linear_sampler);
@@ -573,60 +547,6 @@ flush_quads :: (renderer: *Renderer) {
     array_reset(*renderer.frame_draws);
 }
 
-flush_lines :: (renderer: *Renderer) {
-    if renderer.frame_line_vertices.count == 0 return;
-
-    sdl.end_gpu_render_pass(renderer.current_render_pass);
-
-    vertex_size := cast(u32)(size_of(Vertex_Data) * renderer.frame_line_vertices.count);
-    transfer_data := sdl.map_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer, false);
-    memcpy(transfer_data, renderer.frame_line_vertices.data, vertex_size);
-    sdl.unmap_gpu_transfer_buffer(renderer.device, renderer.line_transfer_buffer);
-
-    copy_pass := sdl.begin_gpu_copy_pass(renderer.current_cmd);
-
-    vertex_location: sdl.GPU_Transfer_Buffer_Location;
-    vertex_location.transfer_buffer = renderer.line_transfer_buffer;
-    vertex_region: sdl.GPU_Buffer_Region;
-    vertex_region.buffer = renderer.line_vertex_buffer;
-    vertex_region.size = vertex_size;
-    sdl.upload_to_gpu_buffer(copy_pass, *vertex_location, *vertex_region, false);
-
-    sdl.end_gpu_copy_pass(copy_pass);
-
-    color_target: sdl.GPU_Color_Target_Info;
-    color_target.texture = renderer.swapchain_texture;
-    color_target.load_op = .LOAD;
-    color_target.store_op = .STORE;
-    renderer.current_render_pass = sdl.begin_gpu_render_pass(renderer.current_cmd, *color_target, 1, null);
-    if renderer.use_viewport then sdl.set_gpu_viewport(renderer.current_render_pass, *renderer.viewport);
-
-    vertex_binding: sdl.GPU_Buffer_Binding = .{buffer = renderer.line_vertex_buffer};
-
-    // Compute MVP - use camera only if use_camera is true
-    mvp: Matrix4;
-    if renderer.camera {
-        view := get_view_matrix(renderer.camera);
-        mvp = renderer.projection * view;
-    } else {
-        mvp = renderer.projection;
-    }
-    ubo := UBO.{ mvp = mvp };
-    sdl.bind_gpu_graphics_pipeline(renderer.current_render_pass, renderer.line_pipeline);
-    sdl.push_gpu_vertex_uniform_data(renderer.current_cmd, 0, *ubo, size_of(UBO));
-    sdl.bind_gpu_vertex_buffers(renderer.current_render_pass, 0, *vertex_binding, 1);
-
-    white_texture_binding: sdl.GPU_Texture_Sampler_Binding = .{texture = renderer.white_texture.gpu_texture, sampler = renderer.sampler};
-    sdl.bind_gpu_fragment_samplers(renderer.current_render_pass, 0, *white_texture_binding, 1);
-
-    for renderer.frame_line_draws {
-        sdl.draw_gpu_primitives(renderer.current_render_pass, it.vertex_count, 1, it.vertex_offset, 0);
-    }
-
-    array_reset(*renderer.frame_line_vertices);
-    array_reset(*renderer.frame_line_draws);
-}
-
 flush_text :: (renderer: *Renderer) {
     if renderer.frame_text_vertices.count == 0 return;
 
@@ -720,7 +640,6 @@ flush_text :: (renderer: *Renderer) {
 
 flush :: (renderer: *Renderer) {
     flush_quads(renderer);
-    flush_lines(renderer);
     flush_text(renderer);
 }
 
@@ -956,19 +875,20 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origi
     render_rect(renderer, rect, color, origin, 0.0);
 }
 
-render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origin: Vector2 = .{0, 0}, rotation: float = 0) {
+render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origin: Vector2 = .{0, 0}, rotation: float = 0, thickness: float = 1.0) {
     x_offset : float32 : 0.5;
     y_offset : float32 : 0.5;
 
-    top_left, top_right, bottom_left, bottom_right: Vector2;
+    // Calculate outer corners
+    outer_top_left, outer_top_right, outer_bottom_left, outer_bottom_right: Vector2;
 
     if rotation == 0.0 {
         x := rect.x - origin.x + x_offset;
         y := rect.y - origin.y + y_offset;
-        top_left = .{x, y};
-        top_right = .{x + rect.w - x_offset*2, y};
-        bottom_left = .{x, y + rect.h - y_offset*2};
-        bottom_right = .{x + rect.w - x_offset*2, y + rect.h - y_offset*2};
+        outer_top_left = .{x, y};
+        outer_top_right = .{x + rect.w - x_offset*2, y};
+        outer_bottom_left = .{x, y + rect.h - y_offset*2};
+        outer_bottom_right = .{x + rect.w - x_offset*2, y + rect.h - y_offset*2};
     } else {
         cos_r := cos(rotation);
         sin_r := sin(rotation);
@@ -979,18 +899,24 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origi
         w := rect.w - x_offset*2;
         h := rect.h - y_offset*2;
 
-        top_left.x = x + dx*cos_r - dy*sin_r;
-        top_left.y = y + dx*sin_r + dy*cos_r;
+        outer_top_left.x = x + dx*cos_r - dy*sin_r;
+        outer_top_left.y = y + dx*sin_r + dy*cos_r;
 
-        top_right.x = x + (dx + w)*cos_r - dy*sin_r;
-        top_right.y = y + (dx + w)*sin_r + dy*cos_r;
+        outer_top_right.x = x + (dx + w)*cos_r - dy*sin_r;
+        outer_top_right.y = y + (dx + w)*sin_r + dy*cos_r;
 
-        bottom_left.x = x + dx*cos_r - (dy + h)*sin_r;
-        bottom_left.y = y + dx*sin_r + (dy + h)*cos_r;
+        outer_bottom_left.x = x + dx*cos_r - (dy + h)*sin_r;
+        outer_bottom_left.y = y + dx*sin_r + (dy + h)*cos_r;
 
-        bottom_right.x = x + (dx + w)*cos_r - (dy + h)*sin_r;
-        bottom_right.y = y + (dx + w)*sin_r + (dy + h)*cos_r;
+        outer_bottom_right.x = x + (dx + w)*cos_r - (dy + h)*sin_r;
+        outer_bottom_right.y = y + (dx + w)*sin_r + (dy + h)*cos_r;
     }
+
+    // Calculate inner corners (inset by thickness)
+    inner_top_left := outer_top_left + Vector2.{thickness, thickness};
+    inner_top_right := outer_top_right + Vector2.{-thickness, thickness};
+    inner_bottom_left := outer_bottom_left + Vector2.{thickness, -thickness};
+    inner_bottom_right := outer_bottom_right + Vector2.{-thickness, -thickness};
 
     color_vec4 := Vector4.{
         x = color.r.(float32) / 255.0,
@@ -999,28 +925,45 @@ render_rect :: (renderer: *Renderer, rect: *sdl.F_Rect, color: *sdl.Color, origi
         w = color.a.(float32) / 255.0,
     };
 
-    vertex_offset := cast(u32)renderer.frame_line_vertices.count;
+    vertex_offset := cast(u32)renderer.frame_quad_vertices.count;
+    index_offset := cast(u32)renderer.frame_quad_indices.count;
 
-    array_add(*renderer.frame_line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.frame_line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    // Add 8 vertices (4 outer + 4 inner corners)
+    array_add(*renderer.frame_quad_vertices, .{ position = {outer_top_left.x, outer_top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {outer_top_right.x, outer_top_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {outer_bottom_right.x, outer_bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {outer_bottom_left.x, outer_bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {inner_top_left.x, inner_top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {inner_top_right.x, inner_top_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {inner_bottom_right.x, inner_bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    array_add(*renderer.frame_quad_vertices, .{ position = {inner_bottom_left.x, inner_bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
 
-    array_add(*renderer.frame_line_vertices, .{ position = {top_right.x, top_right.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.frame_line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
+    // Top edge (2 triangles)
+    array_add(*renderer.frame_quad_indices, 0, 1, 5);
+    array_add(*renderer.frame_quad_indices, 0, 5, 4);
 
-    array_add(*renderer.frame_line_vertices, .{ position = {bottom_right.x, bottom_right.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.frame_line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    // Right edge (2 triangles)
+    array_add(*renderer.frame_quad_indices, 1, 2, 6);
+    array_add(*renderer.frame_quad_indices, 1, 6, 5);
 
-    array_add(*renderer.frame_line_vertices, .{ position = {bottom_left.x, bottom_left.y, 0}, color = color_vec4, uv = {0, 0}});
-    array_add(*renderer.frame_line_vertices, .{ position = {top_left.x, top_left.y, 0}, color = color_vec4, uv = {0, 0}});
+    // Bottom edge (2 triangles)
+    array_add(*renderer.frame_quad_indices, 2, 3, 7);
+    array_add(*renderer.frame_quad_indices, 2, 7, 6);
 
-    line_draw: Line_Draw_Call;
-    line_draw.vertex_offset = vertex_offset;
-    line_draw.vertex_count = 8;
-    array_add(*renderer.frame_line_draws, line_draw);
+    // Left edge (2 triangles)
+    array_add(*renderer.frame_quad_indices, 3, 0, 4);
+    array_add(*renderer.frame_quad_indices, 3, 4, 7);
 
-    // Only flush if necessary
-    if renderer.frame_line_vertices.count >= renderer.max_line_vertices {
-        flush_lines(renderer);
+    draw_call: Draw_Call;
+    draw_call.texture = renderer.white_texture;
+    draw_call.vertex_offset = vertex_offset;
+    draw_call.vertex_count = 8;
+    draw_call.index_offset = index_offset;
+    draw_call.index_count = 24;
+    array_add(*renderer.frame_draws, draw_call);
+
+    if renderer.frame_quad_vertices.count >= renderer.max_vertices {
+        flush_quads(renderer);
     }
 }
 
